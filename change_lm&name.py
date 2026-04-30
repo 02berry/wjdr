@@ -43,6 +43,10 @@ TOP_N = 999
 # 保护友方：True 时排除"出现过绿色联盟且从未出现过红色联盟"的玩家
 PROTECT_GREEN_ONLY = True
 
+# 排除低战无敌意：True 时排除声望低于 MIN_POWER 且从未出现过红色的玩家
+FILTER_LOW_POWER = True
+MIN_POWER = 2000
+
 # ==================== 🎨 联盟颜色配置 ====================
 RED_ALLIANCES = ['FFF', '666', 'OoO', 'SSR']
 RED_COLOR = '#E74C3C'
@@ -478,6 +482,10 @@ def draw_timeline(df_plot_full, output_name):
 
     bar_max_length = total_days_span * 0.06
 
+    # 声望条起始偏移：按右侧最长标签计算，避免重叠
+    right_label_width_pt = len(max_right_text) * label_fontsize * 0.85
+    bar_offset_mult = max(0.14, (12 + right_label_width_pt) / 72 * 1.4 / fig_width)
+
     fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=150)
 
     all_prestige = [row['声望'] for _, row in df_plot.iterrows()]
@@ -615,8 +623,8 @@ def draw_timeline(df_plot_full, output_name):
             else:
                 bar_length = bar_max_length * 0.3
 
-            # 声望条位置（在最新状态右侧）
-            bar_start_x = x_last + total_days_span * 0.14
+            # 声望条位置（在最新状态右侧，避开右侧标签）
+            bar_start_x = x_last + total_days_span * bar_offset_mult
 
             # 声望条
             bar_color = get_alliance_color(timeline[sorted_times[-1]]['联盟'])
@@ -643,20 +651,19 @@ def draw_timeline(df_plot_full, output_name):
                             zorder=8)
 
     # --- ⑧ 表头行（初始 | 声望 | 最新） ---
-    hdr_fs = max(8, stat_fontsize + 2)
+    hdr_fs = max(11, stat_fontsize + 5)
     x_last_global = cumulative_days[-1]
-    hdr_bar_x = x_last_global + total_days_span * 0.14
-    hdr_prestige_x = hdr_bar_x + bar_max_length * 0.4
-    hdr_y = 0.64
+    hdr_bar_x = x_last_global + total_days_span * bar_offset_mult
+    hdr_y = 0.62
 
     ax.annotate('初始状态', xy=(cumulative_days[0], hdr_y), xytext=(-8, 0),
                 textcoords='offset points', fontsize=hdr_fs, va='center', ha='right',
-                fontweight='bold', color='#000', alpha=0.85, zorder=1, fontfamily='SimHei')
+                fontweight='bold', color='#000', alpha=0.85, zorder=1, fontfamily='STXingkai')
     ax.text(hdr_bar_x, hdr_y, '声望', fontsize=hdr_fs, va='center', ha='left',
-            fontweight='bold', color='#000', alpha=0.85, zorder=1, fontfamily='SimHei')
+            fontweight='bold', color='#000', alpha=0.85, zorder=1, fontfamily='STXingkai')
     ax.annotate('最新状态', xy=(x_last_global, hdr_y), xytext=(8, 0),
                 textcoords='offset points', fontsize=hdr_fs, va='center', ha='left',
-                fontweight='bold', color='#000', alpha=0.85, zorder=1, fontfamily='SimHei')
+                fontweight='bold', color='#000', alpha=0.85, zorder=1, fontfamily='STXingkai')
 
     # --- ⑨ 标题 ---
     date_range = f"{time_order[0]} ~ {time_order[-1]}"
@@ -684,8 +691,10 @@ def draw_timeline(df_plot_full, output_name):
         xtick_fontsize = 10
         rotation = 0
     ax.set_xticklabels(time_order, fontsize=xtick_fontsize, rotation=rotation)
-    ax.text(0.5, -0.03, '探查时间', fontsize=13, fontweight='bold',
-            ha='center', va='center', transform=ax.transAxes, fontfamily='STXingkai')
+    ax.annotate('探查时间', xy=(0.5, 0), xycoords='axes fraction',
+                xytext=(0, -28), textcoords='offset points',
+                fontsize=13, fontweight='bold', ha='center', va='top',
+                fontfamily='STXingkai')
 
     # --- ⑪ 样式美化 ---
     ax.spines['top'].set_visible(False)
@@ -721,8 +730,26 @@ def draw_timeline(df_plot_full, output_name):
                                   markersize=8, markeredgewidth=1.5, label='无联盟'))
 
     ax.legend(handles=legend_elements, fontsize=7,
-              loc='upper center', bbox_to_anchor=(0.5, -0.05),
+              loc='upper center', bbox_to_anchor=(0.5, 0),
+              borderaxespad=88/7,
               frameon=False, ncol=5, columnspacing=1.2)
+
+    # --- ⑬ 底部输出限制（固定点数间距，不受图高影响） ---
+    ax.annotate(f'战力区间[{MIN_PRESTIGE_FOR_PLOT}, {MAX_PRESTIGE}]',
+                xy=(0.5, 0), xycoords='axes fraction',
+                xytext=(0, -52), textcoords='offset points',
+                fontsize=7, ha='center', va='top', color='#000',
+                fontfamily='Microsoft YaHei')
+    ax.annotate('规则1:曾加入绿色联盟且无红色历史的玩家不显示',
+                xy=(0.5, 0), xycoords='axes fraction',
+                xytext=(0, -64), textcoords='offset points',
+                fontsize=7, ha='center', va='top', color='#000',
+                fontfamily='Microsoft YaHei')
+    ax.annotate(f'规则2:战力低于{MIN_POWER}且无红色历史的玩家不显示',
+                xy=(0.5, 0), xycoords='axes fraction',
+                xytext=(0, -76), textcoords='offset points',
+                fontsize=7, ha='center', va='top', color='#000',
+                fontfamily='Microsoft YaHei')
 
     plt.tight_layout()
     fig.savefig(output_name, dpi=150, bbox_inches='tight', facecolor='white')
@@ -755,6 +782,24 @@ if PROTECT_GREEN_ONLY:
     if excluded > 0:
         print(f"  🟢 保护友方：排除 {excluded} 个仅出现在绿色联盟的玩家")
         df_plot = df_plot[~exclude_mask]
+
+# 排除低战无敌意玩家
+if FILTER_LOW_POWER:
+    def _is_low_and_safe(row):
+        if row['声望'] >= MIN_POWER:
+            return False
+        red_set = {a.upper() for a in RED_ALLIANCES}
+        for data in row['_timeline'].values():
+            alliance = data['联盟'].strip().upper() if pd.notna(data['联盟']) and data['联盟'] != '-' else ''
+            if alliance in red_set:
+                return False
+        return True
+
+    low_mask = df_plot.apply(_is_low_and_safe, axis=1)
+    excluded_low = low_mask.sum()
+    if excluded_low > 0:
+        print(f"  🔻 排除 {excluded_low} 个低战无敌意玩家（声望<{MIN_POWER}）")
+        df_plot = df_plot[~low_mask]
 
 df_plot = df_plot.sort_values('声望', ascending=False).reset_index(drop=True)
 
