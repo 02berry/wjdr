@@ -8,6 +8,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.patheffects as pe
 from datetime import datetime
 
 warnings.filterwarnings('ignore')
@@ -22,16 +23,14 @@ DATA_FOLDER = 'data'
 # 文件名匹配模式
 FILE_PATTERN = '3957_*.xlsx'
 
+# 【修改文件读取数量】总共读取的文件数量（包括最旧的1个 + 最新的N-1个）
+READ_FILE_COUNT = 10  # 例如10表示：最旧1个 + 最新9个
+
 # 图表筛选：声望大于多少才画图
 MIN_PRESTIGE_FOR_PLOT = 3000
 
 # 图表输出数量限制
 TOP_N = 40
-
-# ==================== 🛡️ 豁免账号配置 ====================
-EXEMPT_ACCOUNTS = [
-    904754949,  # 盟主账号
-]
 
 # ==================== 🎨 联盟颜色配置 ====================
 RED_ALLIANCES = ['FFF', '666', 'OoO', 'SSR']
@@ -66,44 +65,162 @@ def get_alliance_color(alliance):
     return ALLIANCE_COLORS.get(alliance.strip().upper(), DEFAULT_COLOR)
 
 
+# ==================== 加载豁免账号 ====================
+def load_protected_accounts(folder_path):
+    """从data文件夹加载change_lm&name_protect.xlsx豁免账号"""
+    protect_file = os.path.join(folder_path, 'change_lm&name_protect.xlsx')
+
+    if not os.path.exists(protect_file):
+        print(f"ℹ️  未找到豁免文件: {protect_file}，将不豁免任何账号")
+        return []
+
+    try:
+        protect_df = pd.read_excel(protect_file, dtype=str)
+
+        # 检查必要的列
+        if '账号' not in protect_df.columns:
+            print(f"⚠️  豁免文件格式错误，需要包含'账号'列")
+            return []
+
+        # 提取账号列表
+        protected = []
+        for _, row in protect_df.iterrows():
+            account = row['账号']
+            remark = row.get('备注', '')
+
+            try:
+                account = int(float(account))
+                protected.append(account)
+                if pd.notna(remark) and str(remark).strip() != '':
+                    print(f"  🛡️  豁免: {account} ({remark})")
+                else:
+                    print(f"  🛡️  豁免: {account}")
+            except (ValueError, TypeError):
+                print(f"  ⚠️  无法解析账号: {account}")
+                continue
+
+        return protected
+
+    except Exception as e:
+        print(f"❌ 读取豁免文件失败: {e}")
+        return []
+
+
 # ==================== 查找文件 ====================
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 FOLDER_PATH = os.path.join(CURRENT_DIR, DATA_FOLDER)
 
-all_files = glob.glob(os.path.join(FOLDER_PATH, FILE_PATTERN))
-all_files = sorted(all_files)
-print(f"找到 {len(all_files)} 个文件:")
+print("🛡️ 加载豁免账号...")
+EXEMPT_ACCOUNTS = load_protected_accounts(FOLDER_PATH)
+print(f"  共豁免 {len(EXEMPT_ACCOUNTS)} 个账号\n")
 
-file_times = []
+all_files = glob.glob(os.path.join(FOLDER_PATH, FILE_PATTERN))
+
+# 过滤掉备注和豁免文件
+all_files = [f for f in all_files if 'miner_remark' not in os.path.basename(f).lower()
+             and 'change_lm' not in os.path.basename(f).lower()
+             and 'name_protect' not in os.path.basename(f).lower()]
+
+print(f"找到 {len(all_files)} 个数据文件")
+
+
+# ==================== 提取文件时间信息 ====================
+def extract_datetime_from_filename(filename):
+    """
+    从文件名中提取日期时间信息
+    支持格式：
+    - 3957_0428.xlsx (一天一次)
+    - 3957_0428a.xlsx, 3957_0428b.xlsx (一天多次)
+    返回 (日期对象, 显示字符串, 排序元组)
+    """
+    match = re.search(r'3957_(\d{4})([a-z]?)\.xlsx', filename)
+    if match:
+        date_str = match.group(1)  # 0428
+        suffix = match.group(2)  # a/b/c 或空字符串
+
+        # 解析日期
+        try:
+            month = int(date_str[:2])
+            day = int(date_str[2:])
+            # 假设2026年（可根据需要修改）
+            date_obj = datetime(2026, month, day)
+
+            # 显示字符串
+            if suffix:
+                display_str = f"{date_str}{suffix}"  # 0428a
+            else:
+                display_str = f"{date_str}"  # 0428
+
+            # 排序键：同一天内 a=1, b=2, c=3..., 无后缀=0（最早）
+            suffix_order = ord(suffix) - ord('a') + 1 if suffix else 0
+
+            return date_obj, display_str, suffix_order
+        except ValueError:
+            pass
+
+    return None, None, 0
+
+
+# 提取所有文件的时间信息
+file_infos = []
 for f in all_files:
     basename = os.path.basename(f)
-    match = re.search(r'3957_(\d{4})', basename)
-    if match:
-        time_str = match.group(1)
-        file_times.append((f, time_str))
-        print(f"  - {basename} → {time_str}")
+    date_obj, display_str, suffix_order = extract_datetime_from_filename(basename)
+    if date_obj and display_str:
+        # 排序键：(日期, 后缀顺序)
+        sort_key = (date_obj, suffix_order)
+        file_infos.append((f, date_obj, display_str, sort_key))
+    else:
+        print(f"  ⚠️ 无法提取日期: {basename}")
 
-if len(file_times) == 0:
-    print("❌ 无文件")
+if len(file_infos) == 0:
+    print("❌ 无有效文件")
     exit()
 
+# 按时间排序
+file_infos.sort(key=lambda x: x[3])
 
-def time_to_date(time_str):
-    month = int(time_str[:2])
-    day = int(time_str[2:])
-    return datetime(2026, month, day)
+print(f"共 {len(file_infos)} 个有效文件，时间范围：{file_infos[0][2]} ~ {file_infos[-1][2]}")
 
+# ==================== 选择文件：最旧1个 + 最新N-1个 ====================
+if len(file_infos) <= READ_FILE_COUNT:
+    selected_files = file_infos
+    print(f"✅ 文件总数({len(file_infos)})≤读取限制({READ_FILE_COUNT})，全部读取")
+else:
+    # 最旧的文件（第一个）
+    oldest = file_infos[0]
 
-time_dates = [time_to_date(t) for _, t in file_times]
-time_order = [t for _, t in file_times]
+    # 最新的READ_FILE_COUNT-1个文件
+    newest = file_infos[-(READ_FILE_COUNT - 1):]
 
+    # 合并并去重（按文件路径）
+    selected_set = {oldest[0]: oldest}
+    for f in newest:
+        selected_set[f[0]] = f
+
+    selected_files = sorted(selected_set.values(), key=lambda x: x[3])
+
+    print(f"✅ 选择策略：最旧1个 + 最新{READ_FILE_COUNT - 1}个 = 共{len(selected_files)}个文件")
+
+print("\n📂 选中的文件:")
+for f, date_obj, display_str, _ in selected_files:
+    print(f"  📄 {os.path.basename(f)} → {display_str}")
+
+# 构建时间映射
+time_order = [info[2] for info in selected_files]  # 显示字符串列表
+time_dates = [info[1] for info in selected_files]  # 日期对象列表
+
+# ==================== 计算累积天数 ====================
 date_diffs = []
 for i in range(len(time_dates)):
     if i == 0:
         date_diffs.append(0)
     else:
         diff = (time_dates[i] - time_dates[i - 1]).days
-        if diff <= 1:
+        # 同一天的文件（后缀不同）间隔设为0.8
+        if diff == 0:
+            date_diffs.append(0.8)
+        elif diff == 1:
             date_diffs.append(1.0)
         elif diff == 2:
             date_diffs.append(1.2)
@@ -115,6 +232,8 @@ for i in range(len(time_dates)):
 cumulative_days = np.cumsum(date_diffs)
 total_days_span = cumulative_days[-1] - cumulative_days[0]
 
+print(f"\n📊 时间跨度: {total_days_span:.1f} (累计)")
+
 
 # ==================== 读取数据 ====================
 def safe_to_numeric(series, default_value=0):
@@ -124,8 +243,13 @@ def safe_to_numeric(series, default_value=0):
 
 account_timeline = {}
 
-for file_path, time_str in file_times:
-    df = pd.read_excel(file_path, sheet_name=0, dtype=str)
+for file_path, date_obj, display_str, _ in selected_files:
+    try:
+        df = pd.read_excel(file_path, sheet_name=0, dtype=str)
+    except Exception as e:
+        print(f"  ❌ 读取失败 {os.path.basename(file_path)}: {e}")
+        continue
+
     df['账号'] = safe_to_numeric(df['账号'])
     df['声望'] = safe_to_numeric(df['声望'])
 
@@ -143,19 +267,19 @@ for file_path, time_str in file_times:
         if account not in account_timeline:
             account_timeline[account] = {}
 
-        account_timeline[account][time_str] = {
+        account_timeline[account][display_str] = {
             '昵称': name,
             '联盟': alliance,
             '声望': prestige,
         }
 
-print(f"追踪 {len(account_timeline)} 个账号（已排除豁免）")
+print(f"\n追踪 {len(account_timeline)} 个账号（已排除 {len(EXEMPT_ACCOUNTS)} 个豁免）")
 
 # ==================== 分析变化 ====================
 change_records = []
 
 for account, timeline in account_timeline.items():
-    sorted_times = sorted(timeline.keys())
+    sorted_times = sorted(timeline.keys(), key=lambda x: time_order.index(x) if x in time_order else 999)
     if len(sorted_times) < 2:
         continue
 
@@ -244,15 +368,48 @@ output_excel = '昵称联盟变化分析.xlsx'
 with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
     output_cols = ['账号', '昵称', '联盟', '声望', '昵称变化次数', '联盟变化次数',
                    '总变化次数', '昵称变化', '联盟变化']
-    df_changes[output_cols].to_excel(writer, sheet_name='变化总览', index=True)
-    if len(df_alliance_changed) > 0:
-        df_alliance_changed[output_cols].to_excel(writer, sheet_name='联盟变化', index=True)
-print(f"📁 {output_excel}")
+
+    # 工作表1: 联盟变化
+    df_sheet1_alliance = df_changes[df_changes['有联盟变化']].sort_values(
+        ['联盟变化次数', '声望'], ascending=[False, False])
+    df_sheet1_name = df_changes[~df_changes['有联盟变化']].sort_values(
+        ['昵称变化次数', '声望'], ascending=[False, False])
+    df_sheet1 = pd.concat([df_sheet1_alliance, df_sheet1_name], ignore_index=True)
+    df_sheet1.index = range(1, len(df_sheet1) + 1)
+    df_sheet1.index.name = '序号'
+    df_sheet1[output_cols].to_excel(writer, sheet_name='联盟变化排名', index=True)
+
+    # 工作表2: 昵称变化
+    df_sheet2_name = df_changes[df_changes['昵称变化次数'] > 0].sort_values(
+        ['昵称变化次数', '联盟变化次数', '声望'], ascending=[False, False, False])
+    df_sheet2_alliance = df_changes[df_changes['昵称变化次数'] == 0].sort_values(
+        ['联盟变化次数', '声望'], ascending=[False, False])
+    df_sheet2 = pd.concat([df_sheet2_name, df_sheet2_alliance], ignore_index=True)
+    df_sheet2.index = range(1, len(df_sheet2) + 1)
+    df_sheet2.index.name = '序号'
+    df_sheet2[output_cols].to_excel(writer, sheet_name='昵称变化排名', index=True)
+
+    # 统计信息
+    stats = [
+        ['总追踪账号', len(account_timeline)],
+        ['有联盟变化', len(df_sheet1_alliance)],
+        ['仅昵称变化', len(df_sheet1_name)],
+        ['有昵称变化', len(df_sheet2_name)],
+        ['仅联盟变化', len(df_sheet2_alliance)],
+        ['豁免账号数', len(EXEMPT_ACCOUNTS)],
+        ['读取文件数', len(selected_files)],
+    ]
+    pd.DataFrame(stats, columns=['项目', '数值']).to_excel(writer, sheet_name='统计', index=False)
+
+print(f"\n📁 {output_excel}")
+print(f"   📋 联盟变化排名 - {len(df_sheet1)}人（有联盟变化{len(df_sheet1_alliance)} + 仅昵称{len(df_sheet1_name)}）")
+print(f"   📋 昵称变化排名 - {len(df_sheet2)}人（有昵称变化{len(df_sheet2_name)} + 仅联盟{len(df_sheet2_alliance)}）")
+print(f"   📋 统计 - 总览信息")
 
 
-# ==================== 通用绘图函数 ====================
+# ==================== 通用绘图函数（优化版） ====================
 def draw_timeline(df_plot_full, output_name, title_suffix, sort_by='alliance'):
-    """绘制时序图"""
+    """绘制优化后的时序图——更清晰、可读、优美"""
     df_plot = df_plot_full.head(TOP_N).copy()
     if len(df_plot) == 0:
         print(f"⚠️ 无符合条件的玩家，跳过 {output_name}")
@@ -260,24 +417,26 @@ def draw_timeline(df_plot_full, output_name, title_suffix, sort_by='alliance'):
 
     n_players = len(df_plot)
 
-    fig_height = max(8, n_players * 0.45)
-    fig_width = max(14, min(40, total_days_span * 0.5))
+    # --- 动态尺寸（略微加大行高和宽度）---
+    fig_height = max(9, n_players * 0.5)
+    fig_width = max(13, min(44, total_days_span * 0.55))
 
-    if n_players > 20 or total_days_span > 20:
-        label_fontsize = 6
-        point_size = 18
-        line_width = 1.5
-        stat_fontsize = 5.5
-    elif n_players > 10 or total_days_span > 10:
-        label_fontsize = 7
-        point_size = 22
-        line_width = 2
-        stat_fontsize = 6.5
-    else:
-        label_fontsize = 8
-        point_size = 28
-        line_width = 2.5
+    # --- 动态字体（提高最小字号）---
+    if n_players > 25:
+        label_fontsize = 6.5
+        point_size = 20
+        line_width = 1.8
+        stat_fontsize = 6
+    elif n_players > 15:
+        label_fontsize = 7.5
+        point_size = 24
+        line_width = 2.2
         stat_fontsize = 7
+    else:
+        label_fontsize = 9
+        point_size = 30
+        line_width = 2.8
+        stat_fontsize = 8
 
     bar_max_length = total_days_span * 0.06
 
@@ -288,145 +447,218 @@ def draw_timeline(df_plot_full, output_name, title_suffix, sort_by='alliance'):
     min_prestige = min(all_prestige) if all_prestige else 0
     prestige_range = max_prestige - min_prestige if max_prestige > min_prestige else 1
 
+    # --- ① 交替行背景（提升行间区分度）---
+    for i in range(n_players):
+        if i % 2 == 1:
+            ax.axhspan(i + 0.5, i + 1.5, facecolor='#F4F6F8', zorder=0, alpha=0.6)
+
+    # --- ② 水平辅助网格线 ---
+    ax.grid(axis='y', alpha=0.15, linestyle='-', linewidth=0.5, zorder=0)
+    ax.grid(axis='x', alpha=0.2, linestyle='--', linewidth=0.5, zorder=0)
+
+    # 最小时间间距（用于水平重叠检测）
+    min_gap = min(cumulative_days[k] - cumulative_days[k-1] for k in range(1, len(cumulative_days))) if len(cumulative_days) > 1 else 1.0
+
     for i, (_, row) in enumerate(df_plot.iterrows()):
         y_pos = i + 1
         timeline = row['_timeline']
         sorted_times = row['_sorted_times']
         change_dates = row['_change_dates']
 
+        # --- ③ 时间线段（加粗、提升对比度）---
         for j in range(len(sorted_times) - 1):
             t_curr = sorted_times[j]
             t_next = sorted_times[j + 1]
-            x_curr = cumulative_days[time_order.index(t_curr)]
-            x_next = cumulative_days[time_order.index(t_next)]
-            alliance_curr = timeline[t_curr]['联盟']
 
+            if t_curr in time_order and t_next in time_order:
+                x_curr = cumulative_days[time_order.index(t_curr)]
+                x_next = cumulative_days[time_order.index(t_next)]
+            else:
+                continue
+
+            alliance_curr = timeline[t_curr]['联盟']
             if alliance_curr == '-':
-                color = '#CCCCCC'
-                alpha = 0.3
+                color = '#AAAAAA'
+                alpha = 0.5
                 linestyle = ':'
             else:
                 color = get_alliance_color(alliance_curr)
-                alpha = 0.6
+                alpha = 0.75
                 linestyle = '-'
 
             ax.plot([x_curr, x_next], [y_pos, y_pos], color=color, linewidth=line_width,
-                    alpha=alpha, linestyle=linestyle, zorder=1)
+                    alpha=alpha, linestyle=linestyle, zorder=2)
 
+        # --- ④ 变化点标记 ---
         for t in sorted_times:
-            if t not in change_dates:
+            if t not in change_dates or t not in time_order:
                 continue
+
             x = cumulative_days[time_order.index(t)]
             alliance = timeline[t]['联盟']
 
-            # 🔧 修复：无联盟空心圆，用 edgecolors 和 facecolors
             if alliance == '-':
-                ax.scatter(x, y_pos, s=point_size, facecolors='none', edgecolors='#999999',
-                           linewidths=1.2, alpha=0.6, zorder=3)
+                ax.scatter(x, y_pos, s=point_size, facecolors='none', edgecolors='#888888',
+                           linewidths=1.5, alpha=0.7, zorder=4)
             else:
-                ax.scatter(x, y_pos, s=point_size, c=get_alliance_color(alliance), alpha=0.85,
-                           edgecolors='white', linewidths=0.5, zorder=3)
+                ax.scatter(x, y_pos, s=point_size, c=get_alliance_color(alliance), alpha=0.9,
+                           edgecolors='white', linewidths=0.8, zorder=4)
 
+        # --- ⑤ 标注变化（联盟统一在上/昵称统一在下，只标变化后信息）---
         prev_name = timeline[sorted_times[0]]['昵称']
         prev_alliance = timeline[sorted_times[0]]['联盟']
 
         for j, t in enumerate(sorted_times):
-            if j == 0:
+            if j == 0 or t not in time_order:
                 continue
+
             x = cumulative_days[time_order.index(t)]
             current_name = timeline[t]['昵称']
             current_alliance = timeline[t]['联盟']
-            annotations_here = []
 
-            if current_alliance != prev_alliance and prev_alliance != '-' and current_alliance != '-':
-                annotations_here.append(('alliance', f"{prev_alliance}→{current_alliance}"))
-            if current_name != prev_name:
-                annotations_here.append(('name', f"{prev_name}→{current_name}"))
+            has_alliance = (current_alliance != prev_alliance and
+                           prev_alliance != '-' and current_alliance != '-')
+            has_name = (current_name != prev_name)
 
-            n_ann = len(annotations_here)
-            for k, (ann_type, ann_text) in enumerate(annotations_here):
-                if n_ann == 2:
-                    offset_y = 14 if ann_type == 'alliance' else 2
-                else:
-                    offset_y = 10
+            if not has_alliance and not has_name:
+                prev_name = current_name
+                prev_alliance = current_alliance
+                continue
 
-                ax.annotate(ann_text,
-                            xy=(x, y_pos), xytext=(0, offset_y),
+            # 联盟变化标注在线之上（只标新联盟）
+            if has_alliance:
+                ax.annotate(current_alliance,
+                            xy=(x, y_pos), xytext=(0, 6),
                             textcoords='offset points', fontsize=label_fontsize, fontweight='bold',
                             ha='center', va='bottom',
-                            color=get_alliance_color(current_alliance) if ann_type == 'alliance' else '#555',
+                            color=get_alliance_color(current_alliance),
+                            path_effects=[pe.withStroke(linewidth=2.5, foreground='white')],
+                            zorder=10)
+
+            # 昵称变化标注在线之下（只标新昵称）
+            if has_name:
+                ax.annotate(current_name,
+                            xy=(x, y_pos), xytext=(0, -6),
+                            textcoords='offset points', fontsize=label_fontsize, fontweight='bold',
+                            ha='center', va='top', color='#666666',
+                            path_effects=[pe.withStroke(linewidth=2.5, foreground='white')],
                             zorder=10)
 
             prev_name = current_name
             prev_alliance = current_alliance
 
+        # --- ⑥ 左侧：起始信息（带边框圆角背景）---
         first_t = sorted_times[0]
-        x_first = cumulative_days[time_order.index(first_t)]
-        first_alliance = timeline[first_t]['联盟']
-        first_name = timeline[first_t]['昵称']
-        first_color = get_alliance_color(first_alliance) if first_alliance != '-' else '#999999'
+        if first_t in time_order:
+            x_first = cumulative_days[time_order.index(first_t)]
+            first_alliance = timeline[first_t]['联盟']
+            first_name = timeline[first_t]['昵称']
+            first_color = get_alliance_color(first_alliance) if first_alliance != '-' else '#888888'
 
-        ax.annotate(f"({first_alliance}){first_name}",
-                    xy=(x_first, y_pos),
-                    xytext=(-10, 0),
-                    textcoords='offset points',
-                    fontsize=label_fontsize - 1, color=first_color,
-                    ha='right', va='center', fontweight='bold', zorder=8)
+            display_name = first_name if len(first_name) <= 8 else first_name[:7] + '…'
+            label_text = f"({first_alliance}){display_name}" if first_alliance != '-' else display_name
 
-        x_last = cumulative_days[time_order.index(sorted_times[-1])]
-        prestige = row['声望']
-        stats_text = f"{row['联盟变化次数']}+{row['昵称变化次数']}" if sort_by == 'alliance' else f"{row['昵称变化次数']}+{row['联盟变化次数']}"
+            ax.annotate(label_text,
+                        xy=(x_first, y_pos),
+                        xytext=(-8, 0),
+                        textcoords='offset points',
+                        fontsize=label_fontsize, color=first_color,
+                        ha='right', va='center', fontweight='bold',
+                        zorder=8)
 
-        if prestige_range > 0:
-            bar_length = bar_max_length * (prestige - min_prestige) / prestige_range + bar_max_length * 0.1
-        else:
-            bar_length = bar_max_length * 0.3
+        # --- ⑦ 右侧：统计信息 + 声望条 + 当前昵称 ---
+        last_t = sorted_times[-1]
+        if last_t in time_order:
+            x_last = cumulative_days[time_order.index(last_t)]
+            prestige = row['声望']
 
-        text_x = x_last + total_days_span * 0.04
-        bar_start_x = text_x + total_days_span * 0.07
+            if sort_by == 'alliance':
+                stats_text = f"联{row['联盟变化次数']}+昵{row['昵称变化次数']}"
+            else:
+                stats_text = f"昵{row['昵称变化次数']}+联{row['联盟变化次数']}"
 
-        ax.text(text_x, y_pos, stats_text, fontsize=stat_fontsize, va='center', ha='left',
-                fontweight='bold', color='#555')
+            # 声望条长度
+            if prestige_range > 0:
+                bar_length = bar_max_length * (prestige - min_prestige) / prestige_range + bar_max_length * 0.1
+            else:
+                bar_length = bar_max_length * 0.3
 
-        bar_color = get_alliance_color(timeline[sorted_times[-1]]['联盟'])
-        if timeline[sorted_times[-1]]['联盟'] == '-':
-            bar_color = '#999999'
+            text_x = x_last + total_days_span * 0.03
+            bar_start_x = text_x + total_days_span * 0.055
 
-        ax.barh(y_pos, bar_length, left=bar_start_x, height=0.35,
-                color=bar_color, alpha=0.7, edgecolor='white', linewidth=0.3, zorder=3)
-        ax.text(bar_start_x + bar_length + total_days_span * 0.01, y_pos, str(prestige),
-                fontsize=stat_fontsize - 1, va='center', ha='left', color='#555', fontweight='bold')
+            # 变化统计标签
+            ax.text(text_x, y_pos, stats_text, fontsize=stat_fontsize, va='center', ha='left',
+                    fontweight='bold', color='#555',
+                    bbox=dict(boxstyle='round,pad=0.08', facecolor='#F8F8F8',
+                              edgecolor='#DDD', alpha=0.7, linewidth=0.3))
 
-    # X轴和X轴标题保留
+            # 声望条
+            bar_color = get_alliance_color(timeline[sorted_times[-1]]['联盟'])
+            if timeline[sorted_times[-1]]['联盟'] == '-':
+                bar_color = '#999999'
+
+            ax.barh(y_pos, bar_length, left=bar_start_x, height=0.35,
+                    color=bar_color, alpha=0.8, edgecolor='white', linewidth=0.5, zorder=3)
+            ax.text(bar_start_x + bar_length + total_days_span * 0.008, y_pos,
+                    f"{prestige:,}",
+                    fontsize=stat_fontsize, va='center', ha='left', color='#333', fontweight='bold')
+
+            # 最新昵称（右侧末尾，带边框统一格式）
+            last_name = timeline[last_t]['昵称']
+            last_alliance = timeline[last_t]['联盟']
+            if last_name:
+                display_last = last_name if len(last_name) <= 8 else last_name[:7] + '…'
+                last_label = f"({last_alliance}){display_last}" if last_alliance != '-' else display_last
+                last_color = get_alliance_color(last_alliance) if last_alliance != '-' else '#888888'
+                ax.annotate(last_label,
+                            xy=(bar_start_x + bar_length + total_days_span * 0.06, y_pos),
+                            xytext=(0, 0), textcoords='offset points',
+                            fontsize=label_fontsize, color=last_color,
+                            ha='left', va='center', fontweight='bold',
+                            zorder=8)
+
+    # --- ⑧ 标题 ---
+    date_range = f"{time_order[0]} ~ {time_order[-1]}"
+    chart_title = f"{title_suffix} | {date_range} | 声望>{MIN_PRESTIGE_FOR_PLOT}"
+    ax.set_title(chart_title, fontsize=14, fontweight='bold', pad=15, color='#222')
+
+    # --- ⑨ X轴优化（标签自动跳过避免拥挤）---
     ax.set_xticks(cumulative_days)
+
+    max_labels = max(10, int(fig_width / 1.8))
+    if len(time_order) > max_labels:
+        step = len(time_order) // max_labels + 1
+        for idx, label in enumerate(ax.get_xticklabels()):
+            if idx % step != 0:
+                label.set_visible(False)
+
     if total_days_span > 30:
-        xtick_fontsize = 6
-        rotation = 45
+        xtick_fontsize = 7
+        rotation = 40
     elif total_days_span > 15:
-        xtick_fontsize = 8
-        rotation = 30
+        xtick_fontsize = 8.5
+        rotation = 25
     else:
         xtick_fontsize = 10
         rotation = 0
     ax.set_xticklabels(time_order, fontsize=xtick_fontsize, rotation=rotation)
-    ax.set_xlabel('日期', fontsize=13, fontweight='bold')
+    ax.set_xlabel('探查时间', fontsize=13, fontweight='bold', labelpad=8)
 
-    # 🔧 去掉上、左、右边框和Y轴标题
+    # --- ⑩ 样式美化 ---
     ax.spines['top'].set_visible(False)
     ax.spines['left'].set_visible(False)
     ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_color('#CCCCCC')
     ax.tick_params(left=False, labelleft=False)
     ax.set_ylabel('')
 
-    left_margin = total_days_span * 0.06
-    right_margin = total_days_span * 0.18
+    # 增加边距让两侧内容有呼吸空间
+    left_margin = total_days_span * 0.10
+    right_margin = total_days_span * 0.28
     ax.set_xlim(cumulative_days[0] - left_margin, cumulative_days[-1] + right_margin)
     ax.set_ylim(n_players + 1.5, 0.5)
 
-    # 去掉标题
-    # (不设置任何标题)
-
-    # 🔧 图例放右上角
+    # --- ⑪ 图例（水平一行，放到图表下方）---
     from matplotlib.lines import Line2D
     legend_elements = []
     if RED_ALLIANCES:
@@ -439,20 +671,14 @@ def draw_timeline(df_plot_full, output_name, title_suffix, sort_by='alliance'):
         legend_elements.append(Line2D([0], [0], marker='o', color='w', markerfacecolor=BLUE_COLOR,
                                       markersize=8, label=LEGEND_LABELS[BLUE_COLOR]))
     legend_elements.append(Line2D([0], [0], marker='o', color='w', markerfacecolor=DEFAULT_COLOR,
-                                  markersize=8, label='其他'))
+                                  markersize=8, label='其他联盟'))
     legend_elements.append(Line2D([0], [0], marker='o', color='w',
-                                  markerfacecolor='none', markeredgecolor='#999999',
+                                  markerfacecolor='none', markeredgecolor='#888888',
                                   markersize=8, markeredgewidth=1.5, label='无联盟'))
 
-    # 🔧 图例字：用"战力"替代"声望"，去掉横线符号
-    if sort_by == 'alliance':
-        legend_text = '联盟变化+昵称变化 战力'
-    else:
-        legend_text = '昵称变化+联盟变化 战力'
-    legend_elements.append(Line2D([0], [0], color='white', linewidth=0, label=legend_text))
-
-    ax.legend(handles=legend_elements, fontsize=7, loc='upper right',
-              framealpha=0.9, edgecolor='#ccc', ncol=1)
+    ax.legend(handles=legend_elements, fontsize=7,
+              loc='upper center', bbox_to_anchor=(0.5, -0.04),
+              framealpha=0.92, edgecolor='#ccc', ncol=5)
 
     plt.tight_layout()
     fig.savefig(output_name, dpi=150, bbox_inches='tight', facecolor='white')
@@ -464,8 +690,8 @@ df_plot1 = df_changes[(df_changes['有联盟变化']) & (df_changes['声望'] > 
 df_plot1 = df_plot1.sort_values(['联盟变化次数', '声望'], ascending=[False, False]).reset_index(drop=True)
 
 df_plot2 = df_changes[(df_changes['昵称变化次数'] > 0) & (df_changes['声望'] > MIN_PRESTIGE_FOR_PLOT)].copy()
-df_plot2 = df_plot2.sort_values(['昵称变化次数', '联盟变化次数', '声望'], ascending=[False, False, False]).reset_index(drop=True)
-
+df_plot2 = df_plot2.sort_values(['昵称变化次数', '联盟变化次数', '声望'], ascending=[False, False, False]).reset_index(
+    drop=True)
 
 # ==================== 生成两张图 ====================
 if len(df_plot1) > 0:
@@ -477,3 +703,5 @@ if len(df_plot2) > 0:
     draw_timeline(df_plot2, '昵称变化时序图.png', '昵称变化玩家', sort_by='name')
 else:
     print(f"⚠️ 图2: 无昵称变化+声望>{MIN_PRESTIGE_FOR_PLOT}的玩家")
+
+print(f"\n✅ 分析完成！")
