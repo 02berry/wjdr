@@ -2,22 +2,33 @@
 
 ## 项目概述
 《无尽冬日》游戏的数据分析工具集，分析玩家行为（联盟变化、昵称变化、挖矿检测、战力对比、落单检测等）。
+仓库: GitHub **02berry/wjdr**
 
 ## 环境
 - Python 3.14.3 (`.venv` 虚拟环境)
 - 依赖: `pandas`, `matplotlib`, `numpy`, `openpyxl`, `scikit-learn`, `PIL`
 - 运行脚本用: `PYTHONIOENCODING=utf-8 ".venv/Scripts/python.exe" script.py`
 
+## 工作流程
+- 改代码前先读文件确认当前状态，不要凭记忆。
+- 一次只改一个点，改完跑脚本确认再下一个，不要批量改动。
+
 ## 数据文件 (`data/`)
 - 命名格式: `3957_MMDD.xlsx` 或 `3957_MMDD{a,b,c}.xlsx`（同一天多次）
 - 列: 账号, 大区, 炉子, 昵称, 联盟, 声望, 联盟名称, 坐标, 罩子, 援军数量, 兵线
 - 豁免文件: `change_lm&name_protect.xlsx`（含 `账号`、`备注` 列）
-- 矿工备注: `miner_remark.xlsx`（含 `账号`、`备注1`、`备注2`、`备注3` 列）
+- 数据整理: `data_prep.py` 可自动标准化文件名、修复声望进位bug、联盟列文本化
 
 ## 脚本功能
 
 ### `change_lm&name.py` — 昵称联盟变化分析 + 时序图
 读取多个时间点的 xlsx 快照，追踪玩家联盟/昵称变化，输出 Excel + 单张合并时序图。
+
+**输出 Excel 三个工作表：** 变化总表（按声望降序）→ 联盟变化排名（仅联盟变化）→ 昵称变化排名（仅昵称变化）
+- 昵称/联盟取最早文件（追根溯源），声望取最新文件
+- 变化格式：`a→b→c` 链条式，无变化留空
+- 列: 账号, 昵称, 联盟, 声望, 昵称变化, 联盟变化
+- 宋体14号，表头加粗居中，昵称/联盟变化列左对齐
 
 **关键配置区（脚本顶部）：**
 - `DATA_FOLDER = 'data'`
@@ -25,11 +36,12 @@
 - `READ_FILE_COUNT = 10` — 读取文件数（最旧1个 + 最新N-1个）
 - `MIN_PRESTIGE_FOR_PLOT = 0` — 图表筛选的最小声望
 - `MAX_PRESTIGE = 20000` — 声望上限（超此值截断，防异常数据撑坏比例）
-- `MIN_ALLIANCE_CHANGES = 0` / `MIN_NAME_CHANGES = 0` / `MIN_TOTAL_CHANGES = 0` — 变化次数阈值
+- `MIN_ALLIANCE_CHANGES = 0` / `MIN_NAME_CHANGES = 0` / `MIN_TOTAL_CHANGES = 0` — 图表筛选的变化次数阈值
 - `TOP_N = 999` — 图表展示前 N 个玩家
 - `PROTECT_GREEN_ONLY = True` — 保护友方：排除仅出现绿色联盟的玩家
 - `FILTER_LOW_POWER = True` + `MIN_POWER = 2000` — 低战过滤：排除声望<阈值且无红色历史的玩家
-- 豁免账号通过 EXEMPT_ACCOUNTS 列表编程添加（非外部文件）
+
+**注意：** 以上筛选条件只影响时序图，Excel 输出不受限制。
 
 **输出：** `昵称联盟变化分析.xlsx` + `玩家变化时序图.png`
 
@@ -48,20 +60,31 @@
 检测多个快照中持续在外采集的账号，输出 Excel。
 
 **关键配置区（脚本顶部）：**
-- `READ_FILE_COUNT = 10` — 读取最近N天的数据
+- `READ_FILE_COUNT = 999` — 读取最近N天的数据
 - `MIN_RECENT_MINING = 5` — 最近N次无挖矿标蓝（退游矿工）
+- `N_LATEST_DAYS = 5` — 最新N天用于"最新挖矿天数"列
+- `LATEST_THRESHOLD = 0.6` — 最新挖矿天数≥此值标绿（近期活跃）
+- `LATEST_MIN = 0.2` — 最新挖矿天数最低门槛，低于此值不输出
+- `THRESHOLD = 0.49` — 历史挖矿率阈值
 - `EXCLUDE_ALLIANCES = ['SSS', '999']` — 排除的联盟列表
-- `THRESHOLD = 0.49` — 挖矿率阈值
-- `MAX_PRESTIGE = 1500` — 声望上限（用最新快照声望判断）
+- `MAX_PRESTIGE = 1500` — 声望上限
 - `MAX_LEVEL = 25` — 炉子等级上限
 
-**输出：** `N_miner.xlsx`（N为分析次数），宋体14号居中对齐，无筛选
-- 红色行 = 有备注的账号，蓝色行 = 退游矿工
-- 列: 账号, 昵称, 联盟, 声望, 坐标, 罩子, 挖矿天数, 挖矿比例/%, 备注1, 备注2, 备注3
-- 按挖矿率降序排列
+**筛选逻辑：** 最新挖矿率≥`LATEST_MIN` 且（历史挖矿率≥`THRESHOLD` 或 最新挖矿率≥`LATEST_THRESHOLD`）
+
+**输出：** `N_miner.xlsx`（N为分析次数，运行前自动清理旧文件），宋体14号居中对齐
+- 绿色行 = 最新N天挖矿率≥LATEST_THRESHOLD（近期活跃），蓝色行 = 退游矿工
+- 底部图例说明绿色/蓝色含义和筛选条件
+- 列: 账号, 昵称, 联盟, 声望, 坐标, 罩子, 历史挖矿天数, 最新挖矿天数
+- 排序：历史挖矿天数↓ → 最新挖矿率↓ → 声望↓
 
 ### `compare_zl_loss.py` — 战力损失对比
 比较两个时间点的玩家战力变化。
+
+### `data_prep.py` — 数据整理工具
+放新文件后运行，自动标准化文件名、修复声望进位bug、联盟列文本化。
+- `DRY_RUN = False` 改为 True 可预览不实际操作
+- `PRESTIGE_HIGH = 10000` / `PRESTIGE_BUG_MAX = 100` — 声望bug检测阈值
 
 ### `outlier_find.py` — 落单检测
 用 DBSCAN 聚类找出脱离联盟聚落的孤立玩家。

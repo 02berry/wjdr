@@ -80,67 +80,23 @@ def extract_date_from_filename(filename):
     return None, None, ''
 
 
-def load_remark_data(folder_path):
-    """从data文件夹加载miner_remark.xlsx备注数据（含备注1、备注2、备注3）"""
-    remark_file = os.path.join(folder_path, 'miner_remark.xlsx')
-
-    if not os.path.exists(remark_file):
-        print(f"  ℹ️  未找到备注文件: {remark_file}，将跳过备注功能")
-        return {}
-
-    try:
-        remark_df = pd.read_excel(remark_file, dtype=str)
-
-        if '账号' not in remark_df.columns:
-            print(f"  ⚠️  备注文件格式错误，需要包含'账号'列")
-            return {}
-
-        note_cols = [c for c in ['备注1', '备注2', '备注3'] if c in remark_df.columns]
-        if not note_cols:
-            print(f"  ⚠️  备注文件格式错误，需要包含'备注1'/'备注2'/'备注3'列")
-            return {}
-
-        remark_dict = {}
-        for _, row in remark_df.iterrows():
-            account = row['账号']
-            try:
-                account = int(float(account))
-            except (ValueError, TypeError):
-                account = str(account).strip()
-
-            notes = {}
-            for col in note_cols:
-                val = row[col]
-                notes[col] = str(val).strip() if pd.notna(val) and str(val).strip() != '' else ''
-
-            if any(notes.values()):
-                remark_dict[account] = notes
-
-        print(f"  ✅ 加载了 {len(remark_dict)} 条备注信息")
-        return remark_dict
-
-    except Exception as e:
-        print(f"  ❌ 读取备注文件失败: {e}")
-        return {}
-
 
 # ==================== 配置区 ====================
 # 【修改文件读取数量】将下面的数字改成你想要读取的最近文件数量
-READ_FILE_COUNT = 10  # 读取最近的文件数量，例如改为5则读取最新5个文件
+READ_FILE_COUNT = 999  # 读取最近的文件数量，例如改为5则读取最新5个文件
 MIN_RECENT_MINING = 5  # 最近N次采集中最少挖矿次数，低于此次数标蓝（退游矿工）
-EXCLUDE_ALLIANCES = ['SSS', '999']  # 排除的联盟列表，用最新联盟判断
+N_LATEST_DAYS = 5  # 最新N天用于计算"最新挖矿天数"列
+LATEST_THRESHOLD = 0.6  # 最新挖矿天数比例阈值，≥此值标绿（近期活跃）
+LATEST_MIN = 0.2  # 最新挖矿天数最低比例，低于此值即使历史达标也不输出
+EXCLUDE_ALLIANCES = ['SSS', '999','UtM']  # 排除的联盟列表，用最新联盟判断
 
 # 其他配置
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 FOLDER_PATH = os.path.join(CURRENT_DIR, 'data')
 FILE_PATTERN = '3957_*.xlsx'  # 文件命名模式：3957_0428.xlsx 或 3957_0428a.xlsx
-THRESHOLD = 0.49
+THRESHOLD = 0.49  # 历史挖矿率阈值，≥此值进入输出列表
 MAX_PRESTIGE = 1500
 MAX_LEVEL = 25
-
-# ==================== 加载备注数据 ====================
-print("📋 加载备注数据...")
-WATCHED_ACCOUNTS = load_remark_data(FOLDER_PATH)
 
 # ==================== 查找并筛选文件 ====================
 all_files = glob.glob(os.path.join(FOLDER_PATH, FILE_PATTERN))
@@ -298,11 +254,14 @@ for day_dict in daily_accounts:
 
 miners = []
 
+latest_n = min(N_LATEST_DAYS, total_days)
+
 for account in all_accounts:
     mining_days = 0
     max_teams = 0
     latest_mining_info = None
     recent_mining_count = 0
+    latest_mining_count = 0
 
     for i, day_dict in enumerate(daily_accounts):
         if account in day_dict:
@@ -310,17 +269,17 @@ for account in all_accounts:
                 mining_days += 1
                 if i < MIN_RECENT_MINING:
                     recent_mining_count += 1
+                if i < latest_n:
+                    latest_mining_count += 1
             max_teams = max(max_teams, day_dict[account]['teams'])
             latest_mining_info = day_dict[account]['info']
 
     ratio = mining_days / total_days
+    latest_ratio = latest_mining_count / latest_n if latest_n > 0 else 0
 
-    if ratio >= THRESHOLD:
-        remark_data = WATCHED_ACCOUNTS.get(account, {})
-        note1 = remark_data.get('备注1', '')
-        note2 = remark_data.get('备注2', '')
-        note3 = remark_data.get('备注3', '')
-        has_note = bool(note1 or note2 or note3)
+    if latest_ratio < LATEST_MIN:
+        continue
+    if ratio >= THRESHOLD or latest_ratio >= LATEST_THRESHOLD:
         is_inactive = recent_mining_count == 0
 
         # 使用最新完整信息（不受挖矿条件限制）
@@ -353,43 +312,45 @@ for account in all_accounts:
             '坐标': final_coord,
             '罩子': final_shield,
             '最大采集队数': max_teams,
-            '挖矿天数': f"{mining_days}/{total_days}",
-            '挖矿比例': round(ratio, 2),
-            '备注1': note1,
-            '备注2': note2,
-            '备注3': note3,
+            '历史挖矿天数': f"{mining_days}/{total_days}",
+            '最新挖矿天数': f"{latest_mining_count}/{latest_n}",
             '_ratio': ratio,
             '_mining_days': mining_days,
-            '_has_note': has_note,
+            '_latest_ratio': latest_ratio,
             '_is_inactive': is_inactive,
         })
 
 df_miners = pd.DataFrame(miners)
 
 if len(df_miners) > 0:
-    df_miners = df_miners.sort_values(['_ratio', '_mining_days', '声望'],
+    df_miners = df_miners.sort_values(['_mining_days', '_latest_ratio', '声望'],
                                       ascending=[False, False, False])
     df_miners = df_miners.drop(columns=['_ratio', '_mining_days'])
     df_miners = df_miners.reset_index(drop=True)
     df_miners.index = df_miners.index + 1
     df_miners.index.name = '序号'
-    # 挖矿比例格式化（纯数字，表头标/%）
-    df_miners['挖矿比例'] = df_miners['挖矿比例'].apply(lambda x: f'{x*100:.0f}')
-    df_miners.rename(columns={'挖矿比例': '挖矿比例/%'}, inplace=True)
 
-    watched_count = df_miners['_has_note'].sum()
+    green_count = (df_miners['_latest_ratio'] >= LATEST_THRESHOLD).sum()
     inactive_count = df_miners['_is_inactive'].sum()
-    print(f"\n✅ 高频挖矿小号: {len(df_miners)} 个 (标记账号: {watched_count}, 退游矿工: {inactive_count})")
+    print(f"\n✅ 高频挖矿小号: {len(df_miners)} 个 (近期活跃: {green_count}, 退游矿工: {inactive_count})")
 else:
     print(f"\n❌ 没有找到满足条件的玩家")
 
 # ==================== 保存（带样式） ====================
+# 清理旧输出文件
+for old_file in glob.glob(os.path.join(CURRENT_DIR, '*_miner.xlsx')):
+    try:
+        os.remove(old_file)
+        print(f"  🗑️ 已删除旧输出: {os.path.basename(old_file)}")
+    except OSError:
+        pass
+
 output_file = f'{total_days}_miner.xlsx'
 
 with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
     if len(df_miners) > 0:
         output_cols = ['账号', '昵称', '联盟', '声望', '坐标', '罩子',
-                       '挖矿天数', '挖矿比例/%', '备注1', '备注2', '备注3']
+                       '历史挖矿天数', '最新挖矿天数']
         # 罩子列中"无"显示为空
         df_miners['罩子'] = df_miners['罩子'].apply(lambda x: '' if str(x).strip() == '无' else x)
         df_miners[output_cols].to_excel(writer, sheet_name='高频挖矿小号', index=False)
@@ -401,34 +362,27 @@ with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         base_font = Font(name='宋体', size=14)
         base_align = Alignment(horizontal='center', vertical='center')
 
-        # 标记样式
-        red_font = Font(name='宋体', size=14, bold=True, color='FF0000')
-        red_fill = PatternFill(start_color='FFE6E6', end_color='FFE6E6', fill_type='solid')
-        blue_font = Font(name='宋体', size=14, bold=True, color='0066CC')
+        # 标记样式（主体不加粗）
+        green_font = Font(name='宋体', size=14, color='008000')
+        green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
+        blue_font = Font(name='宋体', size=14, color='0066CC')
         blue_fill = PatternFill(start_color='DCE6F1', end_color='DCE6F1', fill_type='solid')
 
-        # 遍历所有行，标记有备注的账号（红色）和退游矿工（蓝色）
-        remark_count = 0
+        # 遍历所有行，近期活跃标绿，退游矿工标蓝
+        green_count = 0
         inactive_count = 0
-        note_col_indices = [output_cols.index(c) + 1 for c in ['备注1', '备注2', '备注3']]  # +1因为0-based
 
         for row_idx in range(2, len(df_miners) + 2):
-            has_note_in_row = False
-            for col_idx in note_col_indices:
-                cell_val = worksheet.cell(row=row_idx, column=col_idx).value
-                if cell_val and str(cell_val).strip():
-                    has_note_in_row = True
-                    break
-
             miner_idx = row_idx - 2
+            is_active = df_miners.iloc[miner_idx]['_latest_ratio'] >= LATEST_THRESHOLD
             is_inactive = df_miners.iloc[miner_idx]['_is_inactive']
 
-            if has_note_in_row:
-                remark_count += 1
+            if is_active:
+                green_count += 1
                 for col_idx in range(1, len(output_cols) + 1):
                     cell = worksheet.cell(row=row_idx, column=col_idx)
-                    cell.font = red_font
-                    cell.fill = red_fill
+                    cell.font = green_font
+                    cell.fill = green_fill
                     cell.alignment = base_align
             elif is_inactive:
                 inactive_count += 1
@@ -471,10 +425,26 @@ with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
                     max_length = max(max_length, char_length)
                 except:
                     pass
-            width = max_length + 4
+            width = max_length * 1.4 + 4
             if header_val == '罩子':
                 width *= 1.2
             worksheet.column_dimensions[column_letter].width = width
+
+        # 底部图例说明
+        legend_row = len(df_miners) + 3
+        note_font = Font(name='宋体', size=11, color='555555')
+        legend_texts = [
+            f'🟢 绿色 = 最新{N_LATEST_DAYS}天挖矿比例≥{int(LATEST_THRESHOLD * 100)}%（近期活跃）',
+            f'🔵 蓝色 = 最近{MIN_RECENT_MINING}次采集无挖矿（退游矿工）',
+            f'筛选条件：最新{N_LATEST_DAYS}天挖矿率≥{int(LATEST_MIN * 100)}%，且（历史挖矿率≥{int(THRESHOLD * 100)}% 或 最新{N_LATEST_DAYS}天挖矿率≥{int(LATEST_THRESHOLD * 100)}%）',
+        ]
+        for i, text in enumerate(legend_texts):
+            cell = worksheet.cell(row=legend_row + i, column=1)
+            cell.value = text
+            cell.font = note_font
+            cell.alignment = Alignment(horizontal='left', vertical='center')
+            worksheet.merge_cells(start_row=legend_row + i, start_column=1,
+                                  end_row=legend_row + i, end_column=len(output_cols))
 
         # 冻结首行
         worksheet.freeze_panes = 'A2'
@@ -484,15 +454,10 @@ print(f"\n📁 结果已保存: {output_file}")
 if len(df_miners) > 0:
     print(f"\n🔥 高频挖矿小号（前20）:")
     for i, (_, row) in enumerate(df_miners.head(20).iterrows()):
-        note_parts = []
-        if row['_has_note']:
-            for nk in ['备注1', '备注2', '备注3']:
-                if row[nk]:
-                    note_parts.append(row[nk])
-        note_mark = f" ⚠️[{'|'.join(note_parts)}]" if note_parts else ""
+        active_mark = f" 🟢活跃" if row['_latest_ratio'] >= LATEST_THRESHOLD else ""
         inactive_mark = " 🔵退游" if row['_is_inactive'] else ""
         print(
-            f"  {i + 1}. [{row['联盟']}] {row['昵称']} | 声望{row['声望']} | {row['挖矿天数']}{note_mark}{inactive_mark}")
+            f"  {i + 1}. [{row['联盟']}] {row['昵称']} | 声望{row['声望']} | {row['历史挖矿天数']} | {row['最新挖矿天数']}{active_mark}{inactive_mark}")
 
 # ==================== 生成分析摘要 ====================
 print(f"\n📊 分析摘要:")
@@ -500,7 +465,7 @@ print(f"  - 分析时间跨度: {len(sorted_dates)}天")
 print(f"  - 处理文件数量: {len(selected_files)}个")
 print(f"  - 发现矿工数量: {len(df_miners)}个")
 if len(df_miners) > 0:
-    print(f"  - 标记账号数量: {watched_count}个")
+    print(f"  - 近期活跃(最新{N_LATEST_DAYS}天≥{int(LATEST_THRESHOLD*100)}%): {green_count}个")
     print(f"  - 退游矿工数量: {inactive_count}个（最近{MIN_RECENT_MINING}次无挖矿）")
     top_alliance = df_miners['联盟'].value_counts().head(1)
     if len(top_alliance) > 0:

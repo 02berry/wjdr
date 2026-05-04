@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.patheffects as pe
 from datetime import datetime
+from openpyxl.styles import Font, Alignment
+from openpyxl.utils import get_column_letter
 
 warnings.filterwarnings('ignore')
 plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimSun', 'Arial Unicode MS', 'SimHei', 'Segoe UI Historic', 'DejaVu Sans']
@@ -330,7 +332,7 @@ for account, timeline in account_timeline.items():
                     if timeline[pt]['联盟'] != '-':
                         last_real_alliance = timeline[pt]['联盟']
                         break
-                if last_real_alliance:
+                if last_real_alliance and last_real_alliance != current_alliance:
                     alliance_changes.append((t, last_real_alliance, current_alliance))
 
         prev_name = current_name
@@ -339,11 +341,15 @@ for account, timeline in account_timeline.items():
     total_changes = len(name_changes) + len(alliance_changes)
 
     if total_changes > 0:
+        earliest = timeline[sorted_times[0]]
         latest = timeline[sorted_times[-1]]
 
-        name_change_summary = ' → '.join([f"{old}→{new}" for _, old, new in name_changes]) if name_changes else '无'
-        alliance_summary_parts = [f"{old}→{new}" for _, old, new in alliance_changes]
-        alliance_change_summary = ' | '.join(alliance_summary_parts) if alliance_summary_parts else '无'
+        name_change_summary = '→'.join([name_changes[0][1]] + [new for _, _, new in name_changes]) if name_changes else ''
+        if alliance_changes:
+            alliance_chain = [alliance_changes[0][1]] + [new for _, _, new in alliance_changes]
+            alliance_change_summary = '→'.join(alliance_chain)
+        else:
+            alliance_change_summary = ''
 
         change_dates = set()
         for t_data in name_changes:
@@ -356,8 +362,8 @@ for account, timeline in account_timeline.items():
 
         change_records.append({
             '账号': account,
-            '昵称': latest['昵称'],
-            '联盟': latest['联盟'],
+            '昵称': earliest['昵称'],
+            '联盟': earliest['联盟'],
             '声望': latest['声望'],
             '昵称变化次数': len(name_changes),
             '联盟变化次数': len(alliance_changes),
@@ -380,54 +386,74 @@ if len(df_changes) > 0:
     df_name_only = df_changes[~df_changes['有联盟变化']].sort_values(
         ['昵称变化次数', '声望'], ascending=[False, False])
     df_changes = pd.concat([df_alliance_changed, df_name_only], ignore_index=True)
-    df_changes.index = range(1, len(df_changes) + 1)
-    df_changes.index.name = '序号'
 else:
     print("❌ 无变化")
     exit()
 
 # ==================== 保存Excel ====================
 output_excel = '昵称联盟变化分析.xlsx'
+output_cols = ['账号', '昵称', '联盟', '声望', '昵称变化', '联盟变化']
+left_align_cols = {'昵称变化', '联盟变化'}  # 文本列左对齐
+
+body_font = Font(name='宋体', size=14)
+center_align = Alignment(horizontal='center', vertical='center')
+left_align = Alignment(horizontal='left', vertical='center')
+
 with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-    output_cols = ['账号', '昵称', '联盟', '声望', '昵称变化次数', '联盟变化次数',
-                   '总变化次数', '昵称变化', '联盟变化']
+    # 工作表1: 变化总表（按最新声望降序）
+    df_all = df_changes.sort_values('声望', ascending=False).reset_index(drop=True)
+    df_all[output_cols].to_excel(writer, sheet_name='变化总表', index=False)
 
-    # 工作表1: 联盟变化
-    df_sheet1_alliance = df_changes[df_changes['有联盟变化']].sort_values(
+    # 工作表2: 联盟变化排名（仅保留有联盟变化者）
+    df_sheet1 = df_changes[df_changes['有联盟变化']].sort_values(
         ['联盟变化次数', '声望'], ascending=[False, False])
-    df_sheet1_name = df_changes[~df_changes['有联盟变化']].sort_values(
+    df_sheet1[output_cols].to_excel(writer, sheet_name='联盟变化排名', index=False)
+
+    # 工作表3: 昵称变化排名（仅保留有昵称变化者）
+    df_sheet2 = df_changes[df_changes['昵称变化次数'] > 0].sort_values(
         ['昵称变化次数', '声望'], ascending=[False, False])
-    df_sheet1 = pd.concat([df_sheet1_alliance, df_sheet1_name], ignore_index=True)
-    df_sheet1.index = range(1, len(df_sheet1) + 1)
-    df_sheet1.index.name = '序号'
-    df_sheet1[output_cols].to_excel(writer, sheet_name='联盟变化排名', index=True)
+    df_sheet2[output_cols].to_excel(writer, sheet_name='昵称变化排名', index=False)
 
-    # 工作表2: 昵称变化
-    df_sheet2_name = df_changes[df_changes['昵称变化次数'] > 0].sort_values(
-        ['昵称变化次数', '联盟变化次数', '声望'], ascending=[False, False, False])
-    df_sheet2_alliance = df_changes[df_changes['昵称变化次数'] == 0].sort_values(
-        ['联盟变化次数', '声望'], ascending=[False, False])
-    df_sheet2 = pd.concat([df_sheet2_name, df_sheet2_alliance], ignore_index=True)
-    df_sheet2.index = range(1, len(df_sheet2) + 1)
-    df_sheet2.index.name = '序号'
-    df_sheet2[output_cols].to_excel(writer, sheet_name='昵称变化排名', index=True)
+    # ========== 样式 ==========
+    for sheet_name in ['变化总表', '联盟变化排名', '昵称变化排名']:
+        ws = writer.sheets[sheet_name]
 
-    # 统计信息
-    stats = [
-        ['总追踪账号', len(account_timeline)],
-        ['有联盟变化', len(df_sheet1_alliance)],
-        ['仅昵称变化', len(df_sheet1_name)],
-        ['有昵称变化', len(df_sheet2_name)],
-        ['仅联盟变化', len(df_sheet2_alliance)],
-        ['豁免账号数', len(EXEMPT_ACCOUNTS)],
-        ['读取文件数', len(selected_files)],
-    ]
-    pd.DataFrame(stats, columns=['项目', '数值']).to_excel(writer, sheet_name='统计', index=False)
+        # 表头
+        for col_idx in range(1, len(output_cols) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.font = Font(name='宋体', size=14, bold=True)
+            cell.alignment = center_align
+
+        # 数据行
+        for row_idx in range(2, ws.max_row + 1):
+            for col_idx in range(1, len(output_cols) + 1):
+                col_name = output_cols[col_idx - 1]
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.font = body_font
+                cell.alignment = left_align if col_name in left_align_cols else center_align
+
+        # 自动列宽
+        for col_idx in range(1, len(output_cols) + 1):
+            max_char = 0
+            col_letter = get_column_letter(col_idx)
+            for row_idx in range(1, ws.max_row + 1):
+                val = str(ws.cell(row=row_idx, column=col_idx).value or '')
+                char_len = 0
+                for ch in val:
+                    if '一' <= ch <= '鿿' or '　' <= ch <= '〿':
+                        char_len += 2
+                    else:
+                        char_len += 1
+                max_char = max(max_char, char_len)
+            ws.column_dimensions[col_letter].width = max_char * 1.4 + 4
+
+        # 冻结首行
+        ws.freeze_panes = 'A2'
 
 print(f"\n📁 {output_excel}")
-print(f"   📋 联盟变化排名 - {len(df_sheet1)}人（有联盟变化{len(df_sheet1_alliance)} + 仅昵称{len(df_sheet1_name)}）")
-print(f"   📋 昵称变化排名 - {len(df_sheet2)}人（有昵称变化{len(df_sheet2_name)} + 仅联盟{len(df_sheet2_alliance)}）")
-print(f"   📋 统计 - 总览信息")
+print(f"   📋 变化总表 - {len(df_all)}人（按最新声望降序）")
+print(f"   📋 联盟变化排名 - {len(df_sheet1)}人（仅联盟变化）")
+print(f"   📋 昵称变化排名 - {len(df_sheet2)}人（仅昵称变化）")
 
 
 # ==================== 通用绘图函数（优化版） ====================
