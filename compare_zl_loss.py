@@ -8,11 +8,15 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 import os
+import matplotlib.font_manager as fm
 
 warnings.filterwarnings('ignore')
 
 # ==================== 中文字体设置 ====================
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+for fp in ['C:/Windows/Fonts/msyh.ttc', 'C:/Windows/Fonts/simhei.ttf']:
+    if os.path.exists(fp):
+        fm.fontManager.addfont(fp)
+plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
 # ==================== 读取新旧数据 ====================

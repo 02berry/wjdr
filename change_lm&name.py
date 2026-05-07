@@ -12,9 +12,13 @@ import matplotlib.patheffects as pe
 from datetime import datetime
 from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
+import matplotlib.font_manager as fm
 
 warnings.filterwarnings('ignore')
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimSun', 'Arial Unicode MS', 'SimHei', 'Segoe UI Historic', 'DejaVu Sans']
+for fp in ['C:/Windows/Fonts/msyh.ttc', 'C:/Windows/Fonts/simhei.ttf']:
+    if os.path.exists(fp):
+        fm.fontManager.addfont(fp)
+plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
 # ==================== 🔧 配置区（按需修改） ====================
@@ -26,7 +30,7 @@ DATA_FOLDER = 'data'
 FILE_PATTERN = '3957_*.xlsx'
 
 # 【修改文件读取数量】总共读取的文件数量（包括最旧的1个 + 最新的N-1个）
-READ_FILE_COUNT = 10  # 例如10表示：最旧1个 + 最新9个
+READ_FILE_COUNT = 999  # 例如10表示：最旧1个 + 最新9个
 
 # 图表筛选：声望大于多少才画图
 MIN_PRESTIGE_FOR_PLOT = 000

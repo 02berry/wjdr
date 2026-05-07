@@ -2,118 +2,68 @@
 
 ## 项目概述
 《无尽冬日》游戏的数据分析工具集，分析玩家行为（联盟变化、昵称变化、挖矿检测、战力对比、落单检测等）。
-仓库: GitHub **02berry/wjdr**
 
 ## 环境
-- Python 3.14.3 (`.venv` 虚拟环境)
-- 依赖: `pandas`, `matplotlib`, `numpy`, `openpyxl`, `scikit-learn`, `PIL`
-- 运行脚本用: `PYTHONIOENCODING=utf-8 ".venv/Scripts/python.exe" script.py`
-
-## 工作流程
-- 改代码前先读文件确认当前状态，不要凭记忆。
-- 一次只改一个点，改完跑脚本确认再下一个，不要批量改动。
+- Python 3.14.3，依赖: `pandas`, `matplotlib`, `numpy`, `openpyxl`, `scikit-learn`, `PIL`
+- 运行: `PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe script.py`
 
 ## 数据文件 (`data/`)
-- 命名格式: `3957_MMDD.xlsx` 或 `3957_MMDD{a,b,c}.xlsx`（同一天多次）
+- 命名格式: `3957_MMDD.xlsx` 或 `3957_MMDD{a,b,c}.xlsx`
 - 列: 账号, 大区, 炉子, 昵称, 联盟, 声望, 联盟名称, 坐标, 罩子, 援军数量, 兵线
-- 豁免文件: `change_lm&name_protect.xlsx`（含 `账号`、`备注` 列）
+- 豁免文件: `change_lm&name_protect.xlsx`（含 `账号`、`备注`）
 - 数据整理: `data_prep.py` 可自动标准化文件名、修复声望进位bug、联盟列文本化
 
 ## 脚本功能
 
 ### `change_lm&name.py` — 昵称联盟变化分析 + 时序图
-读取多个时间点的 xlsx 快照，追踪玩家联盟/昵称变化，输出 Excel + 单张合并时序图。
-
-**输出 Excel 三个工作表：** 变化总表（按声望降序）→ 联盟变化排名（仅联盟变化）→ 昵称变化排名（仅昵称变化）
-- 昵称/联盟取最早文件（追根溯源），声望取最新文件
-- 变化格式：`a→b→c` 链条式，无变化留空
+**输出 Excel 三表：** 变化总表（声望降序）→ 联盟变化排名 → 昵称变化排名
+- 昵称/联盟取最早文件，声望取最新文件
+- 变化格式：`a→b→c` 链条式
 - 列: 账号, 昵称, 联盟, 声望, 昵称变化, 联盟变化
-- 宋体14号，表头加粗居中，昵称/联盟变化列左对齐
+- 输出: `昵称联盟变化分析.xlsx` + `玩家变化时序图.png`
 
-**关键配置区（脚本顶部）：**
-- `DATA_FOLDER = 'data'`
-- `FILE_PATTERN = '3957_*.xlsx'`
-- `READ_FILE_COUNT = 10` — 读取文件数（最旧1个 + 最新N-1个）
-- `MIN_PRESTIGE_FOR_PLOT = 0` — 图表筛选的最小声望
-- `MAX_PRESTIGE = 20000` — 声望上限（超此值截断，防异常数据撑坏比例）
-- `MIN_ALLIANCE_CHANGES = 0` / `MIN_NAME_CHANGES = 0` / `MIN_TOTAL_CHANGES = 0` — 图表筛选的变化次数阈值
-- `TOP_N = 999` — 图表展示前 N 个玩家
-- `PROTECT_GREEN_ONLY = True` — 保护友方：排除仅出现绿色联盟的玩家
-- `FILTER_LOW_POWER = True` + `MIN_POWER = 2000` — 低战过滤：排除声望<阈值且无红色历史的玩家
-
-**注意：** 以上筛选条件只影响时序图，Excel 输出不受限制。
-
-**输出：** `昵称联盟变化分析.xlsx` + `玩家变化时序图.png`
+**🔧 配置区（脚本顶部）：**
+- `DATA_FOLDER = 'data'`, `FILE_PATTERN = '3957_*.xlsx'`
+- `READ_FILE_COUNT = 10` — 读取文件数
+- `MIN_PRESTIGE_FOR_PLOT = 0`, `MAX_PRESTIGE = 20000`
+- `MIN_ALLIANCE_CHANGES = 0`, `MIN_NAME_CHANGES = 0`, `MIN_TOTAL_CHANGES = 0`
+- `TOP_N = 999`, `PROTECT_GREEN_ONLY = True`, `FILTER_LOW_POWER = True`, `MIN_POWER = 2000`
 
 **图表布局规则：**
-- 单张图，按声望降序排列，含退游过滤（最新快照未出现者排除）
-- 左侧：初始状态标签 `(联盟)昵称`，右对齐
-- 右侧：最新状态标签 `(联盟)昵称`（左对齐）+ 声望条（严格等比于 max_prestige）+ 声望数值
-- 顶部表头行：初始状态（右对齐）/ 声望（左对齐柱状图）/ 最新状态（左对齐）
-- 声望条起始偏移按右侧最长标签动态计算（`bar_offset_mult`），防重叠
-- 初始/最新数据点无内嵌标注，仅中间变化点标注联盟名（线上方）和昵称（线下方）
-- 底部三行输出规则（pt 固定偏移）：战力区间 / 规则1（绿色过滤）/ 规则2（低战过滤）
+- 左侧：`(联盟)昵称` 右对齐，右侧：最新状态 + 声望条（严格等比）+ 声望数值
+- 顶部表头：初始状态（右对齐）/ 声望 / 最新状态（左对齐）
+- 底部三行：战力区间 / 规则1 / 规则2（pt 固定偏移）
 - 标题、探查时间用华文行楷（STXingkai）；表头用 SimHei
-- 图例一行无框，底部元素间距用 offset points（不受图高缩放影响）
 
 ### `Miner_find.py` — 疑似资源号检测
-检测多个快照中持续在外采集的账号，输出 Excel。
+**🔧 配置区：**
+- `READ_FILE_COUNT = 999`, `MIN_RECENT_MINING = 5`, `N_LATEST_DAYS = 5`
+- `LATEST_THRESHOLD = 0.6`, `LATEST_MIN = 0.2`, `THRESHOLD = 0.49`
+- `EXCLUDE_ALLIANCES = ['SSS', '999']`, `MAX_PRESTIGE = 1500`, `MAX_LEVEL = 25`
 
-**关键配置区（脚本顶部）：**
-- `READ_FILE_COUNT = 999` — 读取最近N天的数据
-- `MIN_RECENT_MINING = 5` — 最近N次无挖矿标蓝（退游矿工）
-- `N_LATEST_DAYS = 5` — 最新N天用于"最新挖矿天数"列
-- `LATEST_THRESHOLD = 0.6` — 最新挖矿天数≥此值标绿（近期活跃）
-- `LATEST_MIN = 0.2` — 最新挖矿天数最低门槛，低于此值不输出
-- `THRESHOLD = 0.49` — 历史挖矿率阈值
-- `EXCLUDE_ALLIANCES = ['SSS', '999']` — 排除的联盟列表
-- `MAX_PRESTIGE = 1500` — 声望上限
-- `MAX_LEVEL = 25` — 炉子等级上限
-
-**筛选逻辑：** 最新挖矿率≥`LATEST_MIN` 且（历史挖矿率≥`THRESHOLD` 或 最新挖矿率≥`LATEST_THRESHOLD`）
-
-**输出：** `N_miner.xlsx`（N为分析次数，运行前自动清理旧文件），宋体14号居中对齐
-- 绿色行 = 最新N天挖矿率≥LATEST_THRESHOLD（近期活跃），蓝色行 = 退游矿工
-- 底部图例说明绿色/蓝色含义和筛选条件
+**输出：** `N_miner.xlsx`（绿色=近期活跃，蓝色=退游矿工）
 - 列: 账号, 昵称, 联盟, 声望, 坐标, 罩子, 历史挖矿天数, 最新挖矿天数
-- 排序：历史挖矿天数↓ → 最新挖矿率↓ → 声望↓
 
-### `compare_zl_loss.py` — 战力损失对比
-比较两个时间点的玩家战力变化。
+### `map_view.py` — 菱形地图可视化 + 聚落识别
+**输出：** `Map/地图_MMDD.png` + `Map/地图_MMDD.svg`
+- 菱形坐标转换：`dx = gx - gy`, `dy = gx + gy`
+- 聚落检测：迭代剔除离群点（半径≤30，最少20人），360°扫描找零遮挡标签位置
+- 矿工高亮：双色竖切（左半原色 + 右半黑色）
+- 地形分区：荒原(1200)、雪原(500)、沃土(200) 菱形环，以太阳城(597,597)为中心
+- 附图（Nature-journal 风格）：左上玩家人数时序、左下炉子等级条形图、右下声望直方图+正态拟合
+- DPI=1200，玩家边长=2
 
-### `data_prep.py` — 数据整理工具
-放新文件后运行，自动标准化文件名、修复声望进位bug、联盟列文本化。
-- `DRY_RUN = False` 改为 True 可预览不实际操作
-- `PRESTIGE_HIGH = 10000` / `PRESTIGE_BUG_MAX = 100` — 声望bug检测阈值
+### 其他脚本
+- `compare_zl_loss.py` — 战力损失对比
+- `data_prep.py` — 数据整理（`DRY_RUN = False` 预览）
+- `outlier_find.py` — 落单检测（DBSCAN 聚类）
 
-### `outlier_find.py` — 落单检测
-用 DBSCAN 聚类找出脱离联盟聚落的孤立玩家。
-
-## 图表配色规则
-```python
-RED_ALLIANCES = ['FFF', '666', 'OoO', 'SSR']   → '#E74C3C' (红色)
-GREEN_ALLIANCES = ['999', 'ann', 'xxx']          → '#27AE60' (绿色)
-BLUE_ALLIANCES = ['KFC']                         → '#3498DB' (蓝色)
-其他联盟 → '#000000' (黑色)
-无联盟  → '#888888' (灰色)
-```
-
-## 图表标注规则（`draw_timeline` 函数）
-- 联盟变化：线上方标注新联盟名（联盟色加粗 + 白色描边）
-- 昵称变化：线下方标注新昵称（灰色加粗 + 白色描边）
-- 初始/最新数据点不标注（左右侧标签已展示）
-- 规则1/2 描述从 PROTECT_GREEN_ONLY / FILTER_LOW_POWER + MIN_POWER 读取
-
-## 工作偏好
-- **一次只改一个点**，改完跑图确认再下一个。不要批量改动。
-- 底部元素用 `xytext=(0, -N)` + `textcoords='offset points'` 定位，**不准用 transAxes**（图高缩放导致间距失控）。
-- 图表位置我用 pt 值报给你，直接调 pt 值，不要重新设计间距算法。
-- 昵称完整显示不截断，边距按最长标签自适应。
-- 代码注释极少（只写"为什么"），回复简短不用收尾总结。
-- 不要做我没要求的事，不要"顺便"优化别的。
-- 配置项放脚本顶部 `🔧 配置区`，让我自己改。
-- 阶段完成后 git commit + push，message 用中文。
+## 项目特定规则（全局没有的）
+- 图表配色: `RED_ALLIANCES=['FFF','666','OoO','SSR']→红`, `GREEN_ALLIANCES=['999','ann','xxx']→绿`, `BLUE_ALLIANCES=['KFC']→蓝`, 其他黑/灰
+- 标注规则：联盟变化线上方标新名（联盟色），昵称变化线下方标新名（灰色）
+- 底部定位用 `xytext=(0, -N)` + `offset points`，**不准用 transAxes**
+- 昵称完整显示，边距自适应
+- 代码注释极少（只写"为什么"）
 
 ## git
-- 生成的结果文件（`*.png`、`昵称联盟变化分析.xlsx` 等）不提交
-- `.claude/` 不提交（已在 `.gitignore`）
+- 结果文件（`*.png`、`*.xlsx`）不提交，`.claude/` 不提交

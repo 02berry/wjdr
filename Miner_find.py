@@ -86,15 +86,15 @@ def extract_date_from_filename(filename):
 READ_FILE_COUNT = 999  # 读取最近的文件数量，例如改为5则读取最新5个文件
 MIN_RECENT_MINING = 5  # 最近N次采集中最少挖矿次数，低于此次数标蓝（退游矿工）
 N_LATEST_DAYS = 5  # 最新N天用于计算"最新挖矿天数"列
-LATEST_THRESHOLD = 0.6  # 最新挖矿天数比例阈值，≥此值标绿（近期活跃）
-LATEST_MIN = 0.2  # 最新挖矿天数最低比例，低于此值即使历史达标也不输出
+LATEST_THRESHOLD = 0.8  # 最新挖矿天数比例阈值，≥此值标绿（近期活跃）
+LATEST_MIN = 0.4  # 最新挖矿天数最低比例，低于此值即使历史达标也不输出
 EXCLUDE_ALLIANCES = ['SSS', '999','UtM']  # 排除的联盟列表，用最新联盟判断
 
 # 其他配置
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 FOLDER_PATH = os.path.join(CURRENT_DIR, 'data')
 FILE_PATTERN = '3957_*.xlsx'  # 文件命名模式：3957_0428.xlsx 或 3957_0428a.xlsx
-THRESHOLD = 0.49  # 历史挖矿率阈值，≥此值进入输出列表
+THRESHOLD = 0.6  # 历史挖矿率阈值，≥此值进入输出列表
 MAX_PRESTIGE = 1500
 MAX_LEVEL = 25
 
@@ -258,13 +258,18 @@ latest_n = min(N_LATEST_DAYS, total_days)
 
 for account in all_accounts:
     mining_days = 0
+    appearance_days = 0
     max_teams = 0
     latest_mining_info = None
     recent_mining_count = 0
     latest_mining_count = 0
+    latest_appearance_count = 0
 
     for i, day_dict in enumerate(daily_accounts):
         if account in day_dict:
+            appearance_days += 1
+            if i < latest_n:
+                latest_appearance_count += 1
             if day_dict[account]['is_mining']:
                 mining_days += 1
                 if i < MIN_RECENT_MINING:
@@ -274,8 +279,8 @@ for account in all_accounts:
             max_teams = max(max_teams, day_dict[account]['teams'])
             latest_mining_info = day_dict[account]['info']
 
-    ratio = mining_days / total_days
-    latest_ratio = latest_mining_count / latest_n if latest_n > 0 else 0
+    ratio = mining_days / appearance_days if appearance_days > 0 else 0
+    latest_ratio = latest_mining_count / latest_appearance_count if latest_appearance_count > 0 else 0
 
     if latest_ratio < LATEST_MIN:
         continue
@@ -312,8 +317,8 @@ for account in all_accounts:
             '坐标': final_coord,
             '罩子': final_shield,
             '最大采集队数': max_teams,
-            '历史挖矿天数': f"{mining_days}/{total_days}",
-            '最新挖矿天数': f"{latest_mining_count}/{latest_n}",
+            '历史挖矿天数': f"{mining_days}/{appearance_days}",
+            '最新挖矿天数': f"{latest_mining_count}/{latest_appearance_count}",
             '_ratio': ratio,
             '_mining_days': mining_days,
             '_latest_ratio': latest_ratio,
