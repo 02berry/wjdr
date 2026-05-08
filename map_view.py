@@ -106,6 +106,9 @@ sun_cx = int(str(sun['坐标'])[:3])
 sun_cy = int(str(sun['坐标'])[3:])
 print(f'太阳城: ({sun_cx}, {sun_cy})')
 
+# 地图几何中心（用于地形分区）
+MAP_CX, MAP_CY = 599, 599
+
 # ========== 坐标转换（菱形显示） ==========
 def to_display(gx, gy):
     return gx - gy, gx + gy
@@ -256,13 +259,12 @@ ax.set_facecolor('white')
 # ========== 地形分区 ==========
 for name, side, fill_clr, line_clr in ZONES:
     half = side // 2
-    verts = zone_diamond(sun_cx, sun_cy, half)
+    verts = zone_diamond(MAP_CX, MAP_CY, half)
     poly = Polygon(verts, fill=True, facecolor=fill_clr,
                    edgecolor=line_clr, linewidth=1.5, linestyle='--', zorder=0)
     ax.add_patch(poly)
 
 # ========== 玩家（普通 + 双色矿工） ==========
-half_p = PLAYER_SIZE / 2
 normal_verts, normal_colors = [], []
 dual_left_verts, dual_left_colors = [], []
 dual_right_verts = []
@@ -275,26 +277,27 @@ for _, row in df.iterrows():
     orig_clr = row['pre_miner_color']
 
     if is_miner and main_clr:
-        # 竖切：左半主色，右半黑（用原始四角顶点切分）
+        # 竖切：左半原色，右半黑
         dual_left_verts.append([
-            to_display(gx - 1, gy + 1),   # TL / 菱形左顶点
-            to_display(gx - 1, gy - 1),   # BL / 菱形上顶点
-            to_display(gx, gy),            # 中心
-            to_display(gx + 1, gy + 1),   # TR / 菱形下顶点
+            to_display(gx, gy),         # 底部
+            to_display(gx, gy + 2),     # 左顶点
+            to_display(gx + 2, gy + 2), # 顶部
+            to_display(gx + 1, gy + 1), # 中心
         ])
         dual_left_colors.append(orig_clr)
         dual_right_verts.append([
-            to_display(gx, gy),            # 中心
-            to_display(gx - 1, gy - 1),   # BL / 菱形上顶点
-            to_display(gx + 1, gy - 1),   # BR / 菱形右顶点
-            to_display(gx + 1, gy + 1),   # TR / 菱形下顶点
+            to_display(gx, gy),         # 底部
+            to_display(gx + 1, gy + 1), # 中心
+            to_display(gx + 2, gy),     # 右顶点
+            to_display(gx + 2, gy + 2), # 顶部
         ])
     else:
+        # 玩家占据 (gx,gy)~(gx+2,gy+2) 四格，坐标指向底部格子
         normal_verts.append([
-            to_display(gx - half_p, gy - half_p),
-            to_display(gx + half_p, gy - half_p),
-            to_display(gx + half_p, gy + half_p),
-            to_display(gx - half_p, gy + half_p),
+            to_display(gx, gy),
+            to_display(gx + 2, gy),
+            to_display(gx + 2, gy + 2),
+            to_display(gx, gy + 2),
         ])
         normal_colors.append(MINER_COLOR if is_miner else clr)
 
@@ -379,8 +382,8 @@ ax.legend(handles=legend_handles, loc='upper right', framealpha=0.9,
 
 # ========== 地图边框 ==========
 map_border = Polygon([
-    to_display(0, 0), to_display(S, 0),
-    to_display(S, S), to_display(0, S),
+    to_display(-1, -1), to_display(S, -1),
+    to_display(S, S), to_display(-1, S),
 ], fill=False, edgecolor='#999', linewidth=2, zorder=0)
 ax.add_patch(map_border)
 
@@ -484,8 +487,8 @@ for bar, c in zip(patches, counts):
         ax_br.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
                    f'{int(c)}', ha='center', va='bottom', fontsize=5)
 
-ax.set_xlim(-S, S)
-ax.set_ylim(0, S * 2)
+ax.set_xlim(-S - 1, S + 1)
+ax.set_ylim(-2, S * 2 + 4)
 ax.set_aspect('equal')
 ax.axis('off')
 
