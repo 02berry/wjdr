@@ -6,6 +6,7 @@
 - **`Miner_find.py`**：高频挖矿小号识别，历史+最新双维度筛选，近期活跃标绿、退游矿工标蓝
 - **`change_lm&name.py`**：联盟/昵称变化追踪 + 时序图，三工作表输出（总表/联盟排名/昵称排名）
 - **`map_view.py`**：菱形地图可视化，地形分区 + 聚落识别 + 矿工高亮 + 统计副图（Nature 风格）
+- **`settlement_detail.py`**：聚落细节切块图，按日分文件夹输出
 - **`compare_zl_loss.py`**：声望战损对比，按联盟排名
 - **`outlier_find.py`**：DBSCAN 聚类落单检测
 
@@ -33,3 +34,4 @@
 | `Miner_find.py` | `READ_FILE_COUNT`, `N_LATEST_DAYS`, `LATEST_THRESHOLD`, `LATEST_MIN`, `THRESHOLD`, `EXCLUDE_ALLIANCES`, `MAX_PRESTIGE` |
 | `change_lm&name.py` | `READ_FILE_COUNT`, `MAX_PRESTIGE`, `PROTECT_GREEN_ONLY`, `FILTER_LOW_POWER`, `MIN_POWER` |
 | `map_view.py` | `S`, `PLAYER_SIZE`, `DPI`, `SETTLEMENT_MIN`, `MAX_RADIUS`, `ZONES`, `LABEL_OFFSET` |
+| `settlement_detail.py` | `MIN_SETTLEMENT`, `VIEWPORT_PADDING`, `VIEWPORT_SCALE`, `NAME_FONTSIZE`, `DPI` |

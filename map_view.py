@@ -36,8 +36,11 @@ PLAYER_SIZE = 2
 DPI = 1200
 
 # 矿工高亮
-MINER_FILE = '21_miner.xlsx'
+MINER_FILE = '22_miner.xlsx'
 MINER_COLOR = '#000000'       # 纯黑，非常显眼
+
+# 玩家名称显示
+SHOW_NAMES = False
 
 # 聚落标注手动偏移（联盟名 → (dx, dy) 显示坐标偏移量）
 LABEL_OFFSET = {
@@ -245,8 +248,8 @@ n_miner = df['is_miner'].sum()
 print(f'矿工高亮: {n_miner}人 → {MINER_COLOR}')
 
 # ========== 绘图 ==========
-fig = plt.figure(figsize=(12, 13))
-ax = fig.add_axes([-0.02, 0.14, 1.04, 0.78])  # 上下留边给副图
+fig = plt.figure(figsize=(12, 12))
+ax = fig.add_axes([0.07, 0.07, 0.86, 0.86])  # 外切正方形，居中
 fig.patch.set_facecolor('white')
 ax.set_facecolor('white')
 
@@ -304,6 +307,26 @@ if dual_left_verts:
     ax.add_collection(PolyCollection(dual_right_verts,
                                      facecolors=[MINER_COLOR] * len(dual_right_verts),
                                      edgecolors='none', zorder=2))
+
+# ========== 玩家名称（极小字，全图不可见，放大后可见）==========
+if SHOW_NAMES:
+    for _, row in df.iterrows():
+        is_settle = row['in_settlement']
+        is_miner = row['is_miner']
+        if is_settle:
+            # 聚落：极极小字，放大到极致才能看清，只取前5字
+            ax.text(row['dx'], row['dy'], str(row['昵称'])[:5],
+                    fontsize=0.01, color='#888888',
+                    ha='center', va='center', zorder=3)
+        else:
+            # 非聚落
+            if is_miner:
+                fs, clr = 2.0, '#00C957'   # 翡翠绿，突出
+            else:
+                fs, clr = NAME_FONTSIZE, '#444444'
+            ax.text(row['dx'], row['dy'] + 3, row['昵称'],
+                    fontsize=fs, color=clr,
+                    ha='center', va='bottom', zorder=3)
 
 # ========== 聚落标注 ==========
 for dx, dy, name, clr in settlement_labels:
@@ -382,12 +405,13 @@ def style_ax(ch):
 # 左上：玩家人数时间序列
 files_all = sorted([f for f in os.listdir(DATA_FOLDER)
                     if f.startswith('3957_') and f.endswith('.xlsx')])
-# 按日期分组，取每日最后一份
+# 按日期分组，取每日第一份
 date_groups = {}
 for f in files_all:
     tag = f.replace('3957_', '').replace('.xlsx', '')
     date_key = tag[:4]  # MMDD
-    date_groups[date_key] = f  # 后覆盖 = 取最后一份
+    if date_key not in date_groups:  # 取第一份
+        date_groups[date_key] = f
 daily_dates = sorted(date_groups.keys())
 daily_counts = []
 for d in daily_dates:
@@ -395,60 +419,62 @@ for d in daily_dates:
     cdf = pd.read_excel(f'{DATA_FOLDER}/{f}')
     daily_counts.append(len(cdf))
 
-ax_tl = fig.add_axes([0.04, 0.92, 0.20, 0.06])
+ax_tl = fig.add_axes([0.08, 0.75, 0.17, 0.12])  # 左上角
 ax_tl.plot(range(len(daily_counts)), daily_counts, 'o-', color='#0F4D92',
            markersize=2.5, linewidth=1.0)
 ax_tl.fill_between(range(len(daily_counts)), daily_counts, alpha=0.12, color='#0F4D92')
-ax_tl.set_xlim(-0.3, len(daily_counts) - 0.7)
-# 只标首尾和最大日期
+ax_tl.set_xlim(0, len(daily_counts) - 1)
+ax_tl.set_ylim(1500, max(daily_counts) * 1.05)
+# 每天标一次
 n = len(daily_counts)
-ticks, labels = [], []
-ticks.append(0); labels.append(f'{daily_dates[0][:2]}/{daily_dates[0][2:]}')
-if n > 1:
-    max_idx = daily_counts.index(max(daily_counts))
-    if 0 < max_idx < n-1:
-        ticks.append(max_idx); labels.append(f'{daily_dates[max_idx][:2]}/{daily_dates[max_idx][2:]}\n{max(daily_counts)}人')
-    ticks.append(n-1); labels.append(f'{daily_dates[-1][:2]}/{daily_dates[-1][2:]}')
-ax_tl.set_xticks(ticks)
-ax_tl.set_xticklabels(labels, fontsize=6)
+tick_labels = [f'{d[:2]}/{d[2:]}' for d in daily_dates]
+ax_tl.set_xticks(range(n))
+ax_tl.set_xticklabels(tick_labels, fontsize=6, rotation=45)
 ax_tl.tick_params(axis='y', labelsize=6)
 ax_tl.set_ylabel('人数', fontsize=7)
 style_ax(ax_tl)
 
 # --- 左下：炉子等级分布（逐级条形图，Nature风格）---
-ax_bl = fig.add_axes([0.05, 0.02, 0.40, 0.09])
+ax_bl = fig.add_axes([0.08, 0.07, 0.30, 0.11])  # 左下角
+
+
+def furnace_key(label):
+    """炉子排序键：lv.N→N，火N→34+N，火N-M→34+N+M*0.2"""
+    if label.startswith('火'):
+        s = label.replace('火', '')
+        if '-' in s:
+            base, sub = s.split('-')
+            return 34 + int(base) + int(sub) * 0.2
+        return 34 + int(s) if s else 0
+    return int(label.replace('lv.', ''))
+
+
 furnace_counts = {}
 for v in df['炉子']:
     s = str(v)
-    if s.startswith('火'):
-        furnace_counts['火'] = furnace_counts.get('火', 0) + 1
-    else:
-        try:
-            lv = int(s.replace('lv.', ''))
-            furnace_counts[lv] = furnace_counts.get(lv, 0) + 1
-        except:
-            pass
-levels = sorted([k for k in furnace_counts if isinstance(k, int)])
-all_labels = [str(lv) for lv in levels] + ['火']
-all_counts = [furnace_counts[lv] for lv in levels] + [furnace_counts.get('火', 0)]
+    furnace_counts[s] = furnace_counts.get(s, 0) + 1
+
+sorted_labels = sorted(furnace_counts, key=furnace_key)
+filtered = [(l, furnace_counts[l]) for l in sorted_labels if furnace_key(l) >= 7]
+all_labels, all_counts = zip(*filtered) if filtered else ([], [])
 xp = np.arange(len(all_labels))
 ax_bl.bar(xp, all_counts, color='#3775BA', edgecolor='white', linewidth=0.3, width=0.7)
 style_ax(ax_bl)
-tick_step = max(1, len(all_labels) // 12)
-ax_bl.set_xticks(xp[::tick_step])
-ax_bl.set_xticklabels([all_labels[i] for i in range(0, len(all_labels), tick_step)], fontsize=5.5)
+ax_bl.set_xticks(xp)
+ax_bl.set_xticklabels(all_labels, fontsize=5.5, rotation=60)
 ax_bl.set_xlabel('炉子等级', fontsize=6.5)
 ax_bl.set_ylabel('人数', fontsize=6.5)
 
 # --- 右下：声望分布直方图 + 正态拟合（Nature风格）---
-ax_br = fig.add_axes([0.55, 0.02, 0.42, 0.09])
+ax_br = fig.add_axes([0.66, 0.07, 0.26, 0.10])  # 右下角
 pv = df['声望'].values / 10000
 mu, std = stats.norm.fit(pv)
 bin_edges = np.arange(0, df['声望'].max() + 500, 500) / 10000
 counts, bins_out, patches = ax_br.hist(pv, bins=bin_edges, color='#0F4D92',
                                         edgecolor='white', linewidth=0.3, alpha=0.85)
 style_ax(ax_br)
-ax_br.set_xlabel('声望（万）', fontsize=6.5)
+ax_br.set_xlim(left=0)
+ax_br.set_xlabel('声望（亿）', fontsize=6.5)
 ax_br.set_ylabel('人数', fontsize=6.5)
 xf = np.linspace(pv.min(), pv.max(), 200)
 yf = stats.norm.pdf(xf, mu, std) * len(pv) * (bins_out[1] - bins_out[0])
@@ -458,13 +484,11 @@ for bar, c in zip(patches, counts):
         ax_br.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
                    f'{int(c)}', ha='center', va='bottom', fontsize=5)
 
-ax.set_xlim(-S - 80, S + 80)
-ax.set_ylim(-80, S * 2 + 80)
+ax.set_xlim(-S, S)
+ax.set_ylim(0, S * 2)
 ax.set_aspect('equal')
 ax.axis('off')
 
 fig.savefig(OUTPUT_FILE, dpi=DPI, bbox_inches='tight')
-fig.savefig(OUTPUT_FILE.replace('.png', '.svg'), bbox_inches='tight')
 print(f'已保存: {OUTPUT_FILE} (DPI={DPI})')
-print(f'已保存: {OUTPUT_FILE.replace(".png", ".svg")}')
 print(f'玩家总数: {len(df)}')
