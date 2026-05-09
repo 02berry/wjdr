@@ -58,6 +58,27 @@
 - 附图（Nature-journal 风格）：左上玩家人数时序、左下炉子等级条形图、右下声望直方图+正态拟合
 - DPI=1200，玩家菱形半径=2（显示坐标单位）
 
+### `throne_photo.py` — 王城合照图
+**输出：** `Map/{MMDD}/{MMDD}_王城合照.png`
+- 灰烬区域放大视图，1.20× 灰烬半宽
+- 玩家着色：联盟颜色映射 + 声望深浅（≤3000最浅，3000~10000渐变，≥10000金色）
+- 火焰晶玩家金边 + 等级数字标注
+- 字体：SimSun（宋体）+ Times New Roman
+- 视口计算：`span_display = 2 * 2 * ASH_HALF * ASH_VIEWPORT_MULT`
+- 图例：手动布局（色条 + 联盟名 + 人数居中），以首行宽度为准对齐
+- 右上角文案可配置（`RIGHT_TEXT`）
+- 头像文件可替换（`AVATAR_FILE`、`AVATAR_COORDS`）
+
+**🔧 配置区：**
+- `ASH_HALF = 13.5` — 灰烬半宽
+- `ASH_VIEWPORT_MULT = 1.20` — 视口放大系数
+- `TITLE` / `TITLE_FONTSIZE` / `DATE_FONTSIZE` — 标题日期
+- `RIGHT_TEXT` / `RIGHT_FONTSIZE` — 右上文案
+- `AVATAR_FILE` / `AVATAR_COORDS` — 头像路径与坐标
+- `GOLD_THRESHOLD` / `PRESTIGE_LOW` / `PRESTIGE_RANGE` — 声望映射
+- `SUN_CITY_LABEL` / `SUN_CITY_FONTSIZE` — 太阳城标注
+- `BG_COLOR` / `OTHER_COLOR` — 背景与默认色
+
 ### `settlement_detail.py` — 聚落细节切块图
 **输出：** `Map/{MMDD}/{联盟}_{人数}人.png`
 - 对每个 ≥50 人的聚落按日切块放大，标注每个玩家名字

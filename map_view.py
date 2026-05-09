@@ -30,13 +30,10 @@ plt.rcParams.update({
 DATA_FOLDER = 'data'
 MAP_FOLDER = 'Map'
 MAPPING_FILE = f'{MAP_FOLDER}/league_mapping.xlsx'
-ARCH_FILE = f'{MAP_FOLDER}/Architecture.xlsx'
 S = 1200
 PLAYER_SIZE = 2
 DPI = 1200
-
-# 矿工高亮
-MINER_FILE = '22_miner.xlsx'
+MINER_FILE_PATTERN = '*_miner.xlsx'
 MINER_COLOR = '#000000'       # 纯黑，非常显眼
 
 # 玩家名称显示
@@ -57,11 +54,34 @@ AUTO_PALETTE = [
     '#CD853F', '#DDA0DD', '#FF7F50', '#4682B4', '#F4A460',
 ]
 
-# 地形配置
+# 地形配置（half = 中心到菱形顶点距离，所有地形同心于 MAP_CX,MAP_CY）
 ZONES = [
-    ('荒原', 1200, '#fff8e1', '#ffe082'),
-    ('雪原',  500, '#e3f2fd', '#90caf9'),
-    ('沃土',  200, '#e8f5e9', '#a5d6a7'),
+    ('荒原', 599.5, '#fff8e1', '#ffe082'),
+    ('雪原', 299.5, '#e3f2fd', '#90caf9'),
+    ('沃土', 149.5, '#e8f5e9', '#a5d6a7'),
+    ('废墟',  48.5, '#e0e0e0', '#e0e0e0'),
+    ('灰烬',  13.5, '#ffcdd2', '#ffcdd2'),
+]
+
+# 建筑（坐标指向底部格子）
+BUILDINGS = [
+    ('太阳城', 597, 597, 6),
+    ('1号要塞', 597, 800, 6),
+    ('2号要塞', 400, 597, 6),
+    ('3号要塞', 597, 400, 6),
+    ('4号要塞', 800, 597, 6),
+    ('1号堡垒', 237, 828, 6),
+    ('2号堡垒', 237, 606, 6),
+    ('3号堡垒', 237, 348, 6),
+    ('4号堡垒', 366, 237, 6),
+    ('5号堡垒', 588, 237, 6),
+    ('6号堡垒', 846, 237, 6),
+    ('7号堡垒', 957, 348, 6),
+    ('8号堡垒', 957, 606, 6),
+    ('9号堡垒', 957, 828, 6),
+    ('10号堡垒', 828, 957, 6),
+    ('11号堡垒', 606, 957, 6),
+    ('12号堡垒', 348, 957, 6),
 ]
 
 # ========== 读取最新数据 ==========
@@ -93,21 +113,21 @@ for _, row in lm.iterrows():
 other_color = '#f5f0e0'  # 接近背景色，缩小后几乎不可见
 df['联盟'] = df['联盟'].astype(str).str.strip()
 
-# ========== 读取矿工名单 ==========
-miner_df = pd.read_excel(MINER_FILE)
-miner_accounts = set(miner_df['账号'].tolist())
+# ========== 读取矿工名单（自动找最新的 *_miner.xlsx）==========
+miner_files = sorted([f for f in os.listdir('.') if f.endswith('_miner.xlsx')])
+if not miner_files:
+    print('警告: 未找到矿工文件')
+    miner_accounts = set()
+else:
+    miner_file = miner_files[-1]
+    print(f'矿工: {miner_file}')
+    miner_df = pd.read_excel(miner_file)
+    miner_accounts = set(miner_df['账号'].tolist())
 df['is_miner'] = df['账号'].isin(miner_accounts)
 print(f'矿工玩家: {df["is_miner"].sum()}')
 
-# ========== 读取建筑 ==========
-arch = pd.read_excel(ARCH_FILE)
-sun = arch[arch['名称'] == '太阳城'].iloc[0]
-sun_cx = int(str(sun['坐标'])[:3])
-sun_cy = int(str(sun['坐标'])[3:])
-print(f'太阳城: ({sun_cx}, {sun_cy})')
-
 # 地图几何中心（用于地形分区）
-MAP_CX, MAP_CY = 599, 599
+MAP_CX, MAP_CY = 599.5, 599.5
 
 # ========== 坐标转换（菱形显示） ==========
 def to_display(gx, gy):
@@ -257,11 +277,41 @@ fig.patch.set_facecolor('white')
 ax.set_facecolor('white')
 
 # ========== 地形分区 ==========
-for name, side, fill_clr, line_clr in ZONES:
-    half = side // 2
+for name, half, fill_clr, line_clr in ZONES:
     verts = zone_diamond(MAP_CX, MAP_CY, half)
     poly = Polygon(verts, fill=True, facecolor=fill_clr,
-                   edgecolor=line_clr, linewidth=1.5, linestyle='--', zorder=0)
+                   edgecolor='none', zorder=0)
+    ax.add_patch(poly)
+
+# ========== 王域（太阳城专属地形，中心 (600,600)）==========
+KINGDOM_CX, KINGDOM_CY = 600, 600
+KINGDOM_HALF = 6.0
+verts = zone_diamond(KINGDOM_CX, KINGDOM_CY, KINGDOM_HALF)
+ax.add_patch(Polygon(verts, fill=True, facecolor='#fff3cd',
+                     edgecolor='none', zorder=0))
+
+# 炮台（王域四角，2×2方块+内切圆）
+TURRET_BASE = '#ffe082'
+TURRET_CIRCLE = '#ffb300'
+TURRET_R = 1.4
+for gx, gy in [(593,593), (605,593), (605,605), (593,605)]:
+    v = [to_display(gx, gy), to_display(gx+2, gy),
+         to_display(gx+2, gy+2), to_display(gx, gy+2)]
+    ax.add_patch(Polygon(v, fill=True, facecolor=TURRET_BASE,
+                         edgecolor='none', zorder=2.5))
+    cx, cy = to_display(gx+1, gy+1)
+    ax.add_patch(plt.Circle((cx, cy), radius=TURRET_R,
+                            facecolor=TURRET_CIRCLE, edgecolor='none', zorder=2.6))
+
+# ========== 建筑废墟（要塞/堡垒周边 59×59 方块）==========
+RUINS_HALF = 29.5
+for name, gx, gy, side in BUILDINGS:
+    if '要塞' not in name and '堡垒' not in name:
+        continue
+    cx, cy = gx + side / 2, gy + side / 2
+    verts = zone_diamond(cx, cy, RUINS_HALF)
+    poly = Polygon(verts, fill=True, facecolor='#e0e0e0',
+                   edgecolor='none', zorder=1)
     ax.add_patch(poly)
 
 # ========== 玩家（普通 + 双色矿工） ==========
@@ -337,18 +387,18 @@ for dx, dy, name, clr in settlement_labels:
             color=clr, fontweight='bold', zorder=5)
 
 # ========== 建筑 ==========
-for _, b in arch.iterrows():
-    name, coord_str, side = b['名称'], str(b['坐标']), int(b['边长'])
-    cx, cy = int(coord_str[:3]), int(coord_str[3:])
-    half = side / 2
+print(f'太阳城: (597, 597)  堡垒: 12')
+
+for name, gx, gy, side in BUILDINGS:
     corners = [
-        (cx - half, cy - half), (cx + half, cy - half),
-        (cx + half, cy + half), (cx - half, cy + half),
+        (gx, gy), (gx + side, gy),
+        (gx + side, gy + side), (gx, gy + side),
     ]
     verts = [to_display(x, y) for x, y in corners]
     poly = Polygon(verts, fill=True, facecolor='#e8dcc8',
                    edgecolor='#8b7355', linewidth=1.5, zorder=3)
     ax.add_patch(poly)
+    cx, cy = gx + side / 2, gy + side / 2
     dx, dy = to_display(cx, cy)
     fs, fw = (9, 'bold') if name == '太阳城' else (7, 'normal')
     ax.text(dx, dy + 8, name, ha='center', va='bottom', fontsize=fs,

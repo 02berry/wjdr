@@ -357,7 +357,7 @@ for s in settlements:
     cbar.set_label('战力（万）', fontsize=8)
     cbar.ax.tick_params(labelsize=6)
 
-    out = f'{out_dir}/{safe_name}_{s["n"]}人.png'
+    out = f'{out_dir}/{date_str}_{safe_name}.png'
     try:
         fig.savefig(out, dpi=DPI, bbox_inches='tight')
     except OSError:
