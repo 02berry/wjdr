@@ -1,4 +1,37 @@
-"""游戏地图可视化 — 菱形地图 + 地形分区 + 聚落识别"""
+"""全地图可视化 — 菱形地图 + 地形分区 + 聚落标注 + 旗子领地 + 熊坑
+
+输出: Map/地图_MMDD.png (1200DPI, 12×12英寸, 全图约2400×2400显示单位)
+
+坐标模型:
+  to_display(gx, gy) = (gx - gy, gx + gy)
+  这等价于把游戏坐标逆时针旋转45度并放大√2倍。
+  玩家坐标 (gx,gy) 指向所占 2×2 块的底部格子。
+  玩家菱形顶点: (gx,gy)→(gx+2,gy)→(gx+2,gy+2)→(gx,gy+2)
+  地图几何中心: (600,600)，地形以同心菱形环排列。
+
+渲染分层:
+  zorder 0:   地形（荒原→雪原→沃土→废墟→灰烬→王域）
+  zorder 1:   要塞/堡垒废墟方块（覆盖原本地形）
+  zorder 1.5: 旗子领地填充（浅蓝）
+  zorder 1.6: 领地联合边界（格子级4邻域，重叠处无线）
+  zorder 2:   玩家菱形块（声望深浅着色）
+  zorder 2.1: 火晶金边
+  zorder 3:   建筑（太阳城、要塞、堡垒）
+  zorder 5:   旗子圆 / HQ圆 / 聚落标注
+  zorder 6:   熊坑图片
+
+着色规则:
+  前10联盟：联盟色 + 声望深浅（≤3000最浅，3000~10000渐变，>10000变深）
+  非前10联盟：黑色调，纯黑对应全服最高声望，低声望依次减淡
+  火晶玩家：金色边框线（0.15pt）
+
+配置区（脚本顶部）:
+  DATA_FOLDER, MAP_FOLDER, MAPPING_FILE, S=1200, DPI=1200
+  SHOW_NAMES, LABEL_OFFSET, SETTLEMENT_MIN=20, MAX_RADIUS=30
+  TOP_N=10, NEUTRAL='#000000'
+  地形颜色见 ZONES 列表
+  建筑坐标见 BUILDINGS 列表
+"""
 
 import pandas as pd
 import numpy as np
@@ -8,6 +41,7 @@ from matplotlib.collections import PolyCollection
 import re, os
 from scipy import stats
 import matplotlib.font_manager as fm
+from PIL import Image
 
 # 显式注册中文字体，避免缓存导致的回退到 DejaVu Sans
 for fp in ['C:/Windows/Fonts/msyh.ttc', 'C:/Windows/Fonts/simhei.ttf']:
@@ -33,8 +67,6 @@ MAPPING_FILE = f'{MAP_FOLDER}/league_mapping.xlsx'
 S = 1200
 PLAYER_SIZE = 2
 DPI = 1200
-MINER_FILE_PATTERN = '*_miner.xlsx'
-MINER_COLOR = '#000000'       # 纯黑，非常显眼
 
 # 玩家名称显示
 SHOW_NAMES = False
@@ -56,11 +88,11 @@ AUTO_PALETTE = [
 
 # 地形配置（half = 中心到菱形顶点距离，所有地形同心于 MAP_CX,MAP_CY）
 ZONES = [
-    ('荒原', 599.5, '#fff8e1', '#ffe082'),
-    ('雪原', 299.5, '#e3f2fd', '#90caf9'),
-    ('沃土', 149.5, '#e8f5e9', '#a5d6a7'),
-    ('废墟',  48.5, '#e0e0e0', '#e0e0e0'),
-    ('灰烬',  13.5, '#ffcdd2', '#ffcdd2'),
+    ('荒原', 599.5, '#fffcf0', '#ffe082'),
+    ('雪原', 299.5, '#f1f9fd', '#90caf9'),
+    ('沃土', 149.5, '#f4faf4', '#a5d6a7'),
+    ('废墟',  48.5, '#f0f0f0', '#f0f0f0'),
+    ('灰烬',  14, '#f2ecec', '#e0d6d6'),
 ]
 
 # 建筑（坐标指向底部格子）
@@ -83,6 +115,53 @@ BUILDINGS = [
     ('11号堡垒', 606, 957, 6),
     ('12号堡垒', 348, 957, 6),
 ]
+
+# ========== 读取建筑表（arc.xlsx）==========
+ARC_FILE = f'{MAP_FOLDER}/arc.xlsx'
+ARC_CFG = {
+    'flag': {'size': 1, 'territory': 7, 'label': None},
+    'Headquarters': {'size': 3, 'territory': 15, 'label': '联盟总部'},
+}
+if os.path.exists(ARC_FILE):
+    rows = []
+    xls = pd.ExcelFile(ARC_FILE)
+    for sheet in xls.sheet_names:
+        sdf = pd.read_excel(xls, sheet)
+        col1, col2 = sdf.columns[0], sdf.columns[1]
+        for _, r in sdf.iterrows():
+            coord = r[col1]
+            btype = 'flag'
+            if pd.notna(r[col2]):
+                val = str(r[col2]).strip()
+                if val:
+                    btype = val
+            rows.append({'联盟': sheet, '类型': btype, '坐标': coord})
+    arc_df = pd.DataFrame(rows)
+    arc_df['gx'] = (arc_df['坐标'] // 1000).astype(int)
+    arc_df['gy'] = (arc_df['坐标'] % 1000).astype(int)
+    arc_df = arc_df.drop_duplicates(subset=['gx', 'gy'])
+    arc_df['dx'] = arc_df['gx'] - arc_df['gy']
+    arc_df['dy'] = arc_df['gx'] + arc_df['gy']
+    print(f'建筑: {len(arc_df)} 座')
+
+    # 计算所有领地格子（游戏坐标，用于联合边界）
+    territory_cells = set()
+    for _, b in arc_df.iterrows():
+        cfg = ARC_CFG[b['类型']]
+        half = cfg['territory']
+        cx, cy = b['dx'], b['dy'] + cfg['size']
+        fx, fy = b['gx'], b['gy']
+        span = half + cfg['size']
+        for gx in range(max(0, fx - span), min(S, fx + span + 1)):
+            for gy in range(max(0, fy - span), min(S, fy + span + 1)):
+                dx, dy = gx - gy, gx + gy
+                if abs(dx - cx) + abs(dy + 1 - cy) <= half + 1e-9:
+                    territory_cells.add((gx, gy))
+    print(f'领地格子: {len(territory_cells)}')
+else:
+    arc_df = pd.DataFrame()
+    territory_cells = set()
+    print('建筑表不存在，跳过')
 
 # ========== 读取最新数据 ==========
 files = sorted([f for f in os.listdir(DATA_FOLDER)
@@ -110,24 +189,10 @@ for _, row in lm.iterrows():
     if pd.notna(a) and pd.notna(c):
         color_map[str(a).strip()] = c
 
-other_color = '#f5f0e0'  # 接近背景色，缩小后几乎不可见
 df['联盟'] = df['联盟'].astype(str).str.strip()
 
-# ========== 读取矿工名单（自动找最新的 *_miner.xlsx）==========
-miner_files = sorted([f for f in os.listdir('.') if f.endswith('_miner.xlsx')])
-if not miner_files:
-    print('警告: 未找到矿工文件')
-    miner_accounts = set()
-else:
-    miner_file = miner_files[-1]
-    print(f'矿工: {miner_file}')
-    miner_df = pd.read_excel(miner_file)
-    miner_accounts = set(miner_df['账号'].tolist())
-df['is_miner'] = df['账号'].isin(miner_accounts)
-print(f'矿工玩家: {df["is_miner"].sum()}')
-
 # 地图几何中心（用于地形分区）
-MAP_CX, MAP_CY = 599.5, 599.5
+MAP_CX, MAP_CY = 600, 600
 
 # ========== 坐标转换（菱形显示） ==========
 def to_display(gx, gy):
@@ -208,27 +273,49 @@ def find_label_pos(center_dx, center_dy, all_players, label_w=48, label_h=26,
         return best_pos_1[0], best_pos_1[1]
     return center_dx, center_dy + 30
 
-# ========== 逐联盟检测聚落 ==========
-alliance_groups = df.groupby('联盟', sort=False)
-alliance_power = alliance_groups['声望'].sum().sort_values(ascending=False)
 
-df['color'] = None
-df['in_settlement'] = False
+def find_bear_pit(member_idx, df, top_n=5):
+    """在聚落中查找熊坑（3×3无玩家区域，靠近顶尖玩家）"""
+    members = df.loc[member_idx]
+    min_gx, max_gx = members['gx'].min(), members['gx'].max()
+    min_gy, max_gy = members['gy'].min(), members['gy'].max()
+    in_area = df[(df['gx'] >= min_gx) & (df['gx'] <= max_gx) &
+                  (df['gy'] >= min_gy) & (df['gy'] <= max_gy)]
+    occupied = set()
+    for _, row in in_area.iterrows():
+        for dx in (0, 1):
+            for dy in (0, 1):
+                occupied.add((row['gx'] + dx, row['gy'] + dy))
+    top_centers = list(zip(
+        members.nlargest(top_n, '声望')['gx'],
+        members.nlargest(top_n, '声望')['gy']))
+    sz = 3
+    best, best_dist = None, float('inf')
+    for x in range(min_gx, max_gx - (sz - 1)):
+        for y in range(min_gy, max_gy - (sz - 1)):
+            if any((x + dx, y + dy) in occupied for dx in range(sz) for dy in range(sz)):
+                continue
+            avg = sum(abs(x - tx) + abs(y - ty) for tx, ty in top_centers) / top_n
+            if avg < best_dist:
+                best_dist, best = avg, (x, y)
+    return best
+
+
+# ========== 前10联盟全联盟着色 ==========
+alliance_power = df.groupby('联盟')['声望'].sum().sort_values(ascending=False)
+# 排除无联盟标记
+alliance_power = alliance_power[alliance_power.index != '-']
+TOP_N = 10
+top_alliances = set(alliance_power.head(TOP_N).index)
+print(f'前{TOP_N}大联盟着色:')
 
 used_colors = set(color_map.values())
 auto_idx = 0
-settlement_alliances = {}
-settlement_labels = []
+df['color'] = None
 
-for alliance, total_power in alliance_power.items():
-    mask = df['联盟'] == alliance
-    indices = df.index[mask].tolist()
-    coords_list = [(df.at[i, 'gx'], df.at[i, 'gy']) for i in indices]
-
-    center, kept = find_settlement_pool(coords_list, SETTLEMENT_MIN, MAX_RADIUS)
-    if kept is None or len(kept) < SETTLEMENT_MIN:
+for alliance in alliance_power.index:
+    if alliance not in top_alliances:
         continue
-
     if alliance in color_map:
         clr = color_map[alliance]
     else:
@@ -237,38 +324,35 @@ for alliance, total_power in alliance_power.items():
         clr = AUTO_PALETTE[auto_idx % len(AUTO_PALETTE)]
         auto_idx += 1
         used_colors.add(clr)
+    df.loc[df['联盟'] == alliance, 'color'] = clr
+    cnt = (df['联盟'] == alliance).sum()
+    print(f'  {alliance}: {clr} ({cnt}人)')
 
-    original_idx = [indices[i] for i in kept]
-    for i in original_idx:
-        df.at[i, 'color'] = clr
-        df.at[i, 'in_settlement'] = True
+# 其余玩家统一浅色
+NEUTRAL = '#000000'
+df['color'] = df['color'].fillna(NEUTRAL)
 
-    settlement_alliances[alliance] = clr
-
-    # 计算标注位置：360度扫描，对所有玩家做遮挡检测
-    member_disp = [to_display(df.at[i, 'gx'], df.at[i, 'gy']) for i in original_idx]
-    all_disp = list(zip(df['dx'], df['dy']))     # 所有玩家
-    cdx = center[0] - center[1]
-    cdy = center[0] + center[1]
+# ========== 聚落检测（标注位置 + 熊坑）==========
+settlements = []
+for alliance in alliance_power.head(TOP_N).index:
+    mask = df['联盟'] == alliance
+    indices = df.index[mask].tolist()
+    coords_list = [(df.at[i, 'gx'], df.at[i, 'gy']) for i in indices]
+    center, kept = find_settlement_pool(coords_list, SETTLEMENT_MIN, MAX_RADIUS)
+    if kept is None or len(kept) < SETTLEMENT_MIN:
+        continue
+    clr = df.at[indices[0], 'color']
+    all_disp = list(zip(df['dx'], df['dy']))
+    cdx, cdy = center[0] - center[1], center[0] + center[1]
     lx, ly = find_label_pos(cdx, cdy, all_disp,
                               manual_offset=LABEL_OFFSET.get(alliance))
-    settlement_labels.append((lx, ly, alliance, clr))
-    print(f'  {alliance} (声望{int(total_power)}): {len(kept)}人 → {clr}')
-
-# ========== 非聚落玩家着色 ==========
-no_settle = df[~df['in_settlement']].index
-for i in no_settle:
-    a = df.at[i, '联盟']
-    df.at[i, 'color'] = color_map.get(a, other_color)
-
-n_settlement = df['in_settlement'].sum()
-print(f'聚落总数: {n_settlement}')
-
-# ========== 矿工高亮（保存原色后覆盖） ==========
-df['pre_miner_color'] = df['color'].copy()
-df.loc[df['is_miner'], 'color'] = MINER_COLOR
-n_miner = df['is_miner'].sum()
-print(f'矿工高亮: {n_miner}人 → {MINER_COLOR}')
+    member_idx = [indices[i] for i in kept]
+    bp = find_bear_pit(member_idx, df)
+    settlements.append({
+        'name': alliance, 'color': clr,
+        'label': (lx, ly), 'bear_pit': bp,
+    })
+    print(f'  {alliance} 标注: ({lx:.0f}, {ly:.0f}){" 熊坑" if bp else ""}')
 
 # ========== 绘图 ==========
 fig = plt.figure(figsize=(12, 12))
@@ -303,88 +387,148 @@ for gx, gy in [(593,593), (605,593), (605,605), (593,605)]:
     ax.add_patch(plt.Circle((cx, cy), radius=TURRET_R,
                             facecolor=TURRET_CIRCLE, edgecolor='none', zorder=2.6))
 
-# ========== 建筑废墟（要塞/堡垒周边 59×59 方块）==========
+# ========== 要塞/堡垒废墟地形（覆盖原本雪原/沃土）==========
 RUINS_HALF = 29.5
+RUINS_COLOR = '#f0f0f0'   # 和废墟地形同色
 for name, gx, gy, side in BUILDINGS:
     if '要塞' not in name and '堡垒' not in name:
         continue
     cx, cy = gx + side / 2, gy + side / 2
     verts = zone_diamond(cx, cy, RUINS_HALF)
-    poly = Polygon(verts, fill=True, facecolor='#e0e0e0',
+    poly = Polygon(verts, fill=True, facecolor=RUINS_COLOR,
                    edgecolor='none', zorder=1)
     ax.add_patch(poly)
 
-# ========== 玩家（普通 + 双色矿工） ==========
+# ========== 旗子领地（联合边界，重叠部分无线）==========
+if len(arc_df) > 0:
+    for _, b in arc_df.iterrows():
+        fdx, fdy = b['dx'], b['dy']
+        cfg = ARC_CFG[b['类型']]
+        half = cfg['territory']
+        cy0 = fdy + cfg['size']
+        verts = [(fdx, cy0 - half), (fdx + half, cy0),
+                 (fdx, cy0 + half), (fdx - half, cy0)]
+        ax.add_patch(plt.Polygon(verts, facecolor='#EDF2F5',
+                                 edgecolor='none', zorder=1.5))
+
+    edge_lines = []
+    for gx, gy in territory_cells:
+        dx, dy = gx - gy, gx + gy
+        if (gx, gy - 1) not in territory_cells:
+            edge_lines.append((dx, dy, dx + 1, dy + 1))
+        if (gx + 1, gy) not in territory_cells:
+            edge_lines.append((dx + 1, dy + 1, dx, dy + 2))
+        if (gx, gy + 1) not in territory_cells:
+            edge_lines.append((dx, dy + 2, dx - 1, dy + 1))
+        if (gx - 1, gy) not in territory_cells:
+            edge_lines.append((dx - 1, dy + 1, dx, dy))
+
+    for x1, y1, x2, y2 in edge_lines:
+        ax.plot([x1, x2], [y1, y2], color='#5DADE2',
+                linewidth=0.15, zorder=1.6)
+
+    for _, b in arc_df.iterrows():
+        fdx, fdy = b['dx'], b['dy']
+        btype = b['类型']
+        cfg = ARC_CFG[btype]
+        cx, cy = fdx, fdy + cfg['size']
+        if btype == 'flag':
+            r = cfg['size'] / np.sqrt(2)
+            ax.add_patch(plt.Circle((cx, cy), r, facecolor='#3A6B8A',
+                                    edgecolor='none', zorder=5))
+        elif btype == 'Headquarters':
+            # 用圆代替菱形，避免与相邻玩家的显示菱形重叠
+            r = cfg['size'] / np.sqrt(2)
+            cx, cy = fdx, fdy + cfg['size']
+            ax.add_patch(plt.Circle((cx, cy), r, facecolor='#3A6B8A',
+                                    edgecolor='none', zorder=5))
+
+# ========== 玩家渲染（声望深浅 + 火晶金边）==========
+def _soften(c, amount=0.45):
+    v = int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
+    v = tuple(int(x + (255 - x) * amount) for x in v)
+    return f'#{v[0]:02x}{v[1]:02x}{v[2]:02x}'
+
+def _darken(c, amount=0.3):
+    v = int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
+    v = tuple(int(x * (1 - amount)) for x in v)
+    return f'#{v[0]:02x}{v[1]:02x}{v[2]:02x}'
+
+max_p = df['声望'].max()
 normal_verts, normal_colors = [], []
-dual_left_verts, dual_left_colors = [], []
-dual_right_verts = []
-has_main = df['pre_miner_color'] != other_color
+fire_verts = []     # 火晶金边菱形
 
 for _, row in df.iterrows():
     gx, gy = row['gx'], row['gy']
-    clr = row['color']
-    is_miner, main_clr = row['is_miner'], has_main.loc[row.name]
-    orig_clr = row['pre_miner_color']
+    base = row['color']
+    prestige = int(row['声望'])
+    is_fire = str(row['炉子']).startswith('火')
 
-    if is_miner and main_clr:
-        # 竖切：左半原色，右半黑
-        dual_left_verts.append([
-            to_display(gx, gy),         # 底部
-            to_display(gx, gy + 2),     # 左顶点
-            to_display(gx + 2, gy + 2), # 顶部
-            to_display(gx + 1, gy + 1), # 中心
-        ])
-        dual_left_colors.append(orig_clr)
-        dual_right_verts.append([
-            to_display(gx, gy),         # 底部
-            to_display(gx + 1, gy + 1), # 中心
-            to_display(gx + 2, gy),     # 右顶点
-            to_display(gx + 2, gy + 2), # 顶部
-        ])
+    # 玩家占据 (gx,gy)~(gx+2,gy+2) 四格，坐标指向底部格子
+    v = [to_display(gx, gy), to_display(gx + 2, gy),
+         to_display(gx + 2, gy + 2), to_display(gx, gy + 2)]
+
+    if base == NEUTRAL:
+        # 非前10联盟：黑色对应全服最高声望，依次减淡
+        ratio = min(prestige / max_p, 1.0)
+        clr = _soften('#000000', 0.95 - (ratio ** 1.2) * 0.95)
+    elif prestige > 10000:
+        dark_norm = min((prestige - 10000) / 5000, 1.0)
+        clr = _darken(base, dark_norm * 0.3)
+    elif prestige <= 3000:
+        clr = _soften(base, 0.90)
     else:
-        # 玩家占据 (gx,gy)~(gx+2,gy+2) 四格，坐标指向底部格子
-        normal_verts.append([
-            to_display(gx, gy),
-            to_display(gx + 2, gy),
-            to_display(gx + 2, gy + 2),
-            to_display(gx, gy + 2),
-        ])
-        normal_colors.append(MINER_COLOR if is_miner else clr)
+        norm = (prestige - 3000) / 7000
+        clr = _soften(base, 0.90 - norm * 0.90)
+
+    normal_verts.append(v)
+    normal_colors.append(clr)
+
+    if is_fire:
+        fire_verts.append(v)
 
 if normal_verts:
     ax.add_collection(PolyCollection(normal_verts, facecolors=normal_colors,
                                      edgecolors='none', zorder=2))
-if dual_left_verts:
-    ax.add_collection(PolyCollection(dual_left_verts, facecolors=dual_left_colors,
-                                     edgecolors='none', zorder=2))
-    ax.add_collection(PolyCollection(dual_right_verts,
-                                     facecolors=[MINER_COLOR] * len(dual_right_verts),
-                                     edgecolors='none', zorder=2))
+for v in fire_verts:
+    ax.add_patch(plt.Polygon(v, fill=False, edgecolor='#FFE033',
+                             linewidth=0.15, zorder=2.1))
 
 # ========== 玩家名称（极小字，全图不可见，放大后可见）==========
 if SHOW_NAMES:
     for _, row in df.iterrows():
-        is_settle = row['in_settlement']
-        is_miner = row['is_miner']
-        if is_settle:
-            # 聚落：极极小字，放大到极致才能看清，只取前5字
-            ax.text(row['dx'], row['dy'], str(row['昵称'])[:5],
-                    fontsize=0.01, color='#888888',
-                    ha='center', va='center', zorder=3)
-        else:
-            # 非聚落
-            if is_miner:
-                fs, clr = 2.0, '#00C957'   # 翡翠绿，突出
-            else:
-                fs, clr = NAME_FONTSIZE, '#444444'
-            ax.text(row['dx'], row['dy'] + 3, row['昵称'],
-                    fontsize=fs, color=clr,
-                    ha='center', va='bottom', zorder=3)
+        fs, clr = 5, '#444444'
+        ax.text(row['dx'], row['dy'] + 3, row['昵称'],
+                fontsize=fs, color=clr,
+                ha='center', va='bottom', zorder=3)
 
 # ========== 聚落标注 ==========
-for dx, dy, name, clr in settlement_labels:
-    ax.text(dx, dy, name, ha='center', va='bottom', fontsize=9,
-            color=clr, fontweight='bold', zorder=5)
+for s in settlements:
+    dx, dy = s['label']
+    ax.text(dx, dy, s['name'], ha='center', va='bottom', fontsize=9,
+            color=s['color'], fontweight='bold', zorder=5)
+
+# ========== 熊坑 ==========
+if any(s['bear_pit'] for s in settlements):
+    bear_img = Image.open('熊坑.png')
+    bear_arr = np.array(bear_img)
+    mask = (bear_arr[:,:,0] < 30) & (bear_arr[:,:,1] < 30) & (bear_arr[:,:,2] < 30)
+    bear_arr = bear_arr.copy()
+    bear_arr[mask, 3] = 0
+    for s in settlements:
+        bp = s['bear_pit']
+        if not bp:
+            continue
+        bx, by = bp
+        bp_verts = [
+            to_display(bx, by), to_display(bx + 3, by),
+            to_display(bx + 3, by + 3), to_display(bx, by + 3),
+        ]
+        half = 2.25
+        cx, cy = bx - by, bx + by + 3
+        im = ax.imshow(bear_arr, extent=[cx - half, cx + half, cy - half, cy + half], zorder=6)
+        clip_poly = plt.Polygon(bp_verts, transform=ax.transData)
+        im.set_clip_path(clip_poly)
 
 # ========== 建筑 ==========
 print(f'太阳城: (597, 597)  堡垒: 12')
@@ -406,25 +550,16 @@ for name, gx, gy, side in BUILDINGS:
 
 # ========== 图例 ==========
 legend_handles = []
-for a, c in color_map.items():
-    if a == 'other':
-        continue
-    cnt = len(df[df['联盟'] == a])
-    if cnt > 0:
-        legend_handles.append(plt.Line2D([0], [0], marker='s', color='w',
-                               markerfacecolor=c, markersize=8, label=f'{a} ({cnt})'))
-for a, c in settlement_alliances.items():
-    if a in color_map:
-        continue
-    cnt = len(df[(df['联盟'] == a) & df['in_settlement']])
-    if cnt > 0:
-        legend_handles.append(plt.Line2D([0], [0], marker='s', color='w',
-                               markerfacecolor=c, markersize=8, label=f'{a} ({cnt})'))
-other_cnt = len(df[~df['联盟'].isin(color_map) & ~df['in_settlement']])
-if other_cnt > 0:
+for a in alliance_power.head(TOP_N).index:
+    c = df.loc[df['联盟'] == a, 'color'].iloc[0]
+    cnt = (df['联盟'] == a).sum()
     legend_handles.append(plt.Line2D([0], [0], marker='s', color='w',
-                           markerfacecolor=other_color, markersize=8,
-                           label=f'其他 ({other_cnt})'))
+                           markerfacecolor=c, markersize=8, label=f'{a} ({cnt})'))
+neutral_cnt = (df['color'] == NEUTRAL).sum()
+if neutral_cnt > 0:
+    legend_handles.append(plt.Line2D([0], [0], marker='s', color='w',
+                           markerfacecolor=NEUTRAL, markersize=8,
+                           label=f'其他 ({neutral_cnt})'))
 
 ax.legend(handles=legend_handles, loc='upper right', framealpha=0.9,
           facecolor='white', edgecolor='#cccccc', labelcolor='#333',

@@ -1,4 +1,29 @@
-"""王城合照图 — 灰烬区域放大，战力映射+火晶/破亿渲染"""
+"""王城合照图 — 灰烬区域放大，头像叠加 + 火晶/破亿渲染
+
+输出: Map/{MMDD}/{MMDD}_王城合照.png (1600DPI, 10×10英寸)
+
+坐标模型: 同 map_view.py（to_display 旋转+缩放）
+  视野以灰烬区为中心（ASH_HALF=13.5），向外放大 ASH_VIEWPORT_MULT=1.20
+  只渲染灰烬范围内的玩家
+
+渲染分层:
+  zorder 0:   地形（沃土→废墟→灰烬→王域）
+  zorder 1:   建筑废墟方块
+  zorder 2:   玩家菱形块（声望深浅）
+  zorder 2.1: 火晶金边
+  zorder 2.2: 破亿金色方块
+  zorder 2.5: 炮台圆环
+  zorder 3:   玩家名字
+  zorder 3.5: 02berry头像
+  zorder 4:   太阳城建筑
+  zorder 5:   太阳城文字
+
+配置区（脚本顶部）:
+  DATA_FOLDER, MAP_FOLDER, DPI=1600, NAME_FONTSIZE=5
+  ASH_HALF=13.5, ASH_VIEWPORT_MULT=1.20
+  GOLD_THRESHOLD=10000, PRESTIGE_LOW=3000, PRESTIGE_RANGE=7000
+  TITLE, RIGHT_TEXT, SUN_CITY_LABEL, AVATAR_FILE 等
+"""
 
 import pandas as pd
 import numpy as np
@@ -30,7 +55,7 @@ DPI = 1600
 NAME_FONTSIZE = 5
 
 # 灰烬范围
-ASH_HALF = 13.5
+ASH_HALF = 14
 ASH_VIEWPORT_MULT = 1.20
 
 # 王域
@@ -128,7 +153,7 @@ for _, row in lm.iterrows():
 df['联盟'] = df['联盟'].astype(str).str.strip()
 
 # ========== 地形 ==========
-MAP_CX, MAP_CY = 599.5, 599.5
+MAP_CX, MAP_CY = 600, 600
 THRONE_ZONES = [
     ('沃土', 149.5, '#e8f5e9'),
     ('废墟',  48.5, '#e0e0e0'),

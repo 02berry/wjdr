@@ -1,4 +1,36 @@
-"""聚落细节图 — 按聚落切块放大，标注玩家名"""
+"""聚落细节图 — 按聚落切块放大，标注玩家名 + 旗子领地 + 熊坑
+
+输出: Map/{MMDD}/{MMDD}_{联盟}.png (1600DPI, 10×10英寸)
+
+坐标模型: 同 map_view.py（to_display 旋转+缩放）
+  玩家坐标 (gx,gy) 指向 2×2 块底部格子
+  玩家菱形顶点: (gx,gy)→(gx+2,gy)→(gx+2,gy+2)→(gx,gy+2)
+
+渲染分层:
+  zorder 1:   旗子领地填充 + 领地联合边界（格子级，重叠处无线）
+  zorder 1.5: 领地合并边界线
+  zorder 2:   玩家菱形块（声望深浅 + 灰色网格线）
+  zorder 2.1: 火晶金边
+  zorder 2.2: 破亿金色方块（现已为深色）
+  zorder 3:   玩家名字
+  zorder 4:   火晶等级标注
+  zorder 5:   旗子圆环 / HQ菱形+文字
+  zorder 6:   熊坑图片
+
+着色规则:
+  聚落成员 → 联盟色 + 声望深浅
+  非成员（路过者）→ 灰色 #ddd0bf
+  火晶玩家 → 金边 + 等级数字标注
+  声望过亿 → 金色方块（或深色，由配置决定）
+
+聚落检测: 迭代剔除离群点（半径≤20），只输出≥50人聚落
+熊坑检测: 扫描 3×3 空格区域，曼哈顿距离选最优
+
+配置区（脚本顶部）:
+  DATA_FOLDER, MAP_FOLDER, MAPPING_FILE, S=1200, DPI=1600
+  MIN_SETTLEMENT=50, VIEWPORT_PADDING=0.35, VIEWPORT_SCALE=1.0
+  NAME_FONTSIZE=5, FILTER_ALLIANCE=None
+"""
 
 import pandas as pd
 import numpy as np
@@ -6,9 +38,8 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import PolyCollection
 import re, os, warnings
 import matplotlib.font_manager as fm
-import matplotlib.colors as mcolors
 import matplotlib.patheffects as pe
-from matplotlib.cm import ScalarMappable
+from PIL import Image
 warnings.filterwarnings('ignore', message='Glyph')
 
 for fp in ['C:/Windows/Fonts/simsun.ttc', 'C:/Windows/Fonts/cambria.ttc',
@@ -30,6 +61,7 @@ MIN_SETTLEMENT = 50       # 只输出超过此人数的大聚落
 VIEWPORT_PADDING = 0.35   # 视口边框额外扩充比例
 VIEWPORT_SCALE = 1.0      # 地图放大倍数
 NAME_FONTSIZE = 5
+FILTER_ALLIANCE = None   # 只画指定联盟，None=画全部
 
 # ========== 名字宽度检测 ==========
 def display_width(s):
@@ -106,6 +138,41 @@ def to_display(gx, gy):
 df['dx'] = df['gx'] - df['gy']
 df['dy'] = df['gx'] + df['gy']
 
+# ========== 读取建筑表（arc.xlsx，每工作表 = 一个联盟） ==========
+ARC_FILE = f'{MAP_FOLDER}/arc.xlsx'
+ARC_CFG = {
+    'flag': {'size': 1, 'territory': 7, 'label': None},
+    'Headquarters': {'size': 3, 'territory': 15, 'label': '联盟总部'},
+}
+if os.path.exists(ARC_FILE):
+    rows = []
+    xls = pd.ExcelFile(ARC_FILE)
+    for sheet in xls.sheet_names:
+        sdf = pd.read_excel(xls, sheet)
+        col1, col2 = sdf.columns[0], sdf.columns[1]
+        for _, r in sdf.iterrows():
+            coord = r[col1]
+            btype = 'flag'
+            if pd.notna(r[col2]):
+                val = str(r[col2]).strip()
+                if val:
+                    btype = val
+            rows.append({'联盟': sheet, '类型': btype, '坐标': coord})
+    arc_df = pd.DataFrame(rows)
+    arc_df['gx'] = (arc_df['坐标'] // 1000).astype(int)
+    arc_df['gy'] = (arc_df['坐标'] % 1000).astype(int)
+    before = len(arc_df)
+    arc_df = arc_df.drop_duplicates(subset=['gx', 'gy'])
+    arc_df['dx'] = arc_df['gx'] - arc_df['gy']
+    arc_df['dy'] = arc_df['gx'] + arc_df['gy']
+    for t, cfg in ARC_CFG.items():
+        cnt = (arc_df['类型'] == t).sum()
+        print(f'  {t}: {cnt} 座')
+    print(f'  共 {len(arc_df)} 座建筑（去重前{before}，去重后{len(arc_df)}）')
+else:
+    arc_df = pd.DataFrame()
+    print('建筑表不存在，跳过')
+
 # ========== 聚落检测 ==========
 def find_settlement_pool(coords_list, min_size, max_radius=20):
     orig_idx = list(range(len(coords_list)))
@@ -155,6 +222,8 @@ alliance_power = alliance_groups['声望'].sum().sort_values(ascending=False)
 
 settlements = []
 for alliance, total_power in alliance_power.items():
+    if FILTER_ALLIANCE and alliance != FILTER_ALLIANCE:
+        continue
     mask = df['联盟'] == alliance
     indices = df.index[mask].tolist()
     coords_list = [(df.at[i, 'gx'], df.at[i, 'gy']) for i in indices]
@@ -223,7 +292,62 @@ for s in settlements:
     fig, ax = plt.subplots(figsize=(10, 10))
     fig.patch.set_facecolor(BG_COLOR)
     ax.set_facecolor(BG_COLOR)
-    fig.subplots_adjust(right=0.85)  # 给 colorbar 腾空间
+    # 无 colorbar，不需要留右空间
+
+    # 建筑领地（浅蓝色菱形，zorder=1 在玩家层之下）
+    if len(arc_df) > 0:
+        for _, b in arc_df.iterrows():
+            fdx, fdy = b['dx'], b['dy']
+            cfg = ARC_CFG[b['类型']]
+            half = cfg['territory']
+            cy0 = fdy + cfg['size']
+            # 领地包围盒与视口无交则跳过（建筑中心可能在视口外但领地伸入视口）
+            if fdx + half < vp[0] or fdx - half > vp[2] or cy0 + half < vp[1] or cy0 - half > vp[3]:
+                continue
+            territory = [(fdx, cy0 - half), (fdx + half, cy0),
+                         (fdx, cy0 + half), (fdx - half, cy0)]
+            ax.add_patch(plt.Polygon(territory, facecolor='#EDF2F5',
+                                     edgecolor='none', zorder=1))
+
+        # 领地合并边界（游戏格子级联合边界）
+        if len(arc_df) > 0:
+            # 1. 构建所有领土格子的集合（游戏坐标）
+            territory_cells = set()
+            for _, b in arc_df.iterrows():
+                cfg = ARC_CFG[b['类型']]
+                half = cfg['territory']
+                cx, cy = b['dx'], b['dy'] + cfg['size']
+                fx, fy = b['gx'], b['gy']
+                span = half + cfg['size']
+                for gx in range(fx - span, fx + span + 1):
+                    for gy in range(fy - span, fy + span + 1):
+                        dx, dy = gx - gy, gx + gy
+                        if abs(dx - cx) + abs(dy + 1 - cy) <= half + 1e-9:
+                            territory_cells.add((gx, gy))
+
+            # 2. 筛选在视口附近的格子
+            near = set()
+            for gx, gy in territory_cells:
+                dx, dy = gx - gy, gx + gy
+                if dx + 1 >= vp[0] and dx - 1 <= vp[2] and dy + 2 >= vp[1] and dy - 1 <= vp[3]:
+                    near.add((gx, gy))
+
+            # 3. 画边界：检查4邻居，不在集合则画共享边
+            edge_lines = []
+            for gx, gy in near:
+                dx, dy = gx - gy, gx + gy
+                if (gx, gy - 1) not in territory_cells:
+                    edge_lines.append((dx, dy, dx + 1, dy + 1))
+                if (gx + 1, gy) not in territory_cells:
+                    edge_lines.append((dx + 1, dy + 1, dx, dy + 2))
+                if (gx, gy + 1) not in territory_cells:
+                    edge_lines.append((dx, dy + 2, dx - 1, dy + 1))
+                if (gx - 1, gy) not in territory_cells:
+                    edge_lines.append((dx - 1, dy + 1, dx, dy))
+
+            for x1, y1, x2, y2 in edge_lines:
+                ax.plot([x1, x2], [y1, y2], color='#5DADE2',
+                        linewidth=0.5, zorder=1.5)
 
     # 视野内所有玩家（聚落成员 + 路过者）
     in_view = df[(df['dx'] >= vp[0]) & (df['dx'] <= vp[2]) &
@@ -325,15 +449,52 @@ for s in settlements:
                 fontsize=nm_fs, color=nm_clr,
                 ha='center', va='center', zorder=3)
 
+    # 建筑标记（旗子圆环 / 总部方块+文字）
+    if len(arc_df) > 0:
+        c = '#3A6B8A'  # 建筑深蓝
+        for _, b in arc_df.iterrows():
+            fdx, fdy = b['dx'], b['dy']
+            if not (vp[0] <= fdx <= vp[2] and vp[1] <= fdy <= vp[3]):
+                continue
+            btype = b['类型']
+            cfg = ARC_CFG[btype]
+            cx, cy = fdx, fdy + cfg['size']
+
+            if btype == 'flag':
+                r_outer = cfg['size'] / np.sqrt(2)  # =0.707
+                r_inner = r_outer * 0.8
+                theta = np.linspace(0, 2 * np.pi, 40)
+                px = np.concatenate([cx + r_outer * np.cos(theta),
+                                     cx + r_inner * np.cos(theta)[::-1]])
+                py = np.concatenate([cy + r_outer * np.sin(theta),
+                                     cy + r_inner * np.sin(theta)[::-1]])
+                ax.add_patch(plt.Polygon(np.column_stack([px, py]),
+                                         facecolor=c, edgecolor='none', zorder=5))
+                ax.add_patch(plt.Circle((cx, cy), r_outer, fill=False,
+                                        edgecolor=c, linewidth=0.6, zorder=5))
+                ax.add_patch(plt.Circle((cx, cy), r_inner, fill=False,
+                                        edgecolor=c, linewidth=0.6, zorder=5))
+
+            elif btype == 'Headquarters':
+                sz = cfg['size']  # =3
+                verts = [(fdx, fdy), (fdx + sz, fdy + sz),
+                         (fdx, fdy + sz * 2), (fdx - sz, fdy + sz)]
+                ax.add_patch(plt.Polygon(verts, facecolor=c, edgecolor=c,
+                                         linewidth=0.6, zorder=5))
+                ax.text(cx, cy, cfg['label'], fontsize=8, color='white',
+                        ha='center', va='center', fontweight='bold',
+                        zorder=6)
+
     ax.set_xlim(vp[0], vp[2])
     ax.set_ylim(vp[1], vp[3])
     ax.set_aspect('equal')
     ax.axis('off')
 
-    # 标题：x月x日[联盟]xx人
-    ax.text(0.5, 0.97, f'{month}月{day}日[{name}]{s["n"]}人',
-            transform=ax.transAxes, fontsize=24, fontweight='bold',
-            ha='center', va='top', color=settle_color.get(name, '#444444'))
+    # 标题：左上角
+    ax.text(0.005, 0.995, f'{month}.{day} {name} {s["n"]}',
+            transform=ax.transAxes, fontsize=6, fontweight='normal',
+            ha='left', va='top', color=settle_color.get(name, '#444444'),
+            alpha=0.6)
 
     # 熊坑标记（3×3方块，坐标指向底部格子）
     if s.get('bear_pit'):
@@ -344,18 +505,19 @@ for s in settlements:
             to_display(bx + 3, by + 3), # 顶部
             to_display(bx, by + 3),     # 左
         ]
-        ax.add_patch(plt.Polygon(bp_verts, facecolor='black', edgecolor='none', zorder=6))
+        # 熊坑图片（缩小25%，黑色背景透明）
+        bear_img = Image.open('熊坑.png')
+        bear_arr = np.array(bear_img)
+        mask = (bear_arr[:,:,0] < 30) & (bear_arr[:,:,1] < 30) & (bear_arr[:,:,2] < 30)
+        bear_arr = bear_arr.copy()
+        bear_arr[mask, 3] = 0
+        half = 2.25  # 3 * 0.75
+        cx, cy = bx - by, bx + by + 3
+        im = ax.imshow(bear_arr, extent=[cx - half, cx + half, cy - half, cy + half], zorder=6)
+        clip_poly = plt.Polygon(bp_verts, transform=ax.transData)
+        im.set_clip_path(clip_poly)
 
-    # 声望深浅图例
-    leg_base = settle_color.get(name, '#888888')
-    cmap = mcolors.LinearSegmentedColormap.from_list('depth',
-        [_soften(leg_base, 0.90), leg_base], N=256)
-    cbar = fig.colorbar(ScalarMappable(cmap=cmap,
-                        norm=mcolors.Normalize(3000, 10000)),
-                        cax=fig.add_axes([0.87, 0.15, 0.025, 0.7]),
-                        ticks=range(3000, 10001, 1000))
-    cbar.set_label('战力（万）', fontsize=8)
-    cbar.ax.tick_params(labelsize=6)
+    # 图例已去掉
 
     out = f'{out_dir}/{date_str}_{safe_name}.png'
     try:
