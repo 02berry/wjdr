@@ -7,6 +7,7 @@ data/
 /CLAUDE.md
 # 生成的结果
 *.png
+!image/*.png
 昵称联盟变化分析.xlsx
 声望战损统计.xlsx
 高频挖矿小号_*天分析.xlsx
