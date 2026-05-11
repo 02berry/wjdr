@@ -1,19 +1,22 @@
 # 数据文件
 data/
 *.xlsx
-
+.claude/
+/test_temp/
+/history/
+/CLAUDE.md
 # 生成的结果
 *.png
 昵称联盟变化分析.xlsx
 声望战损统计.xlsx
 高频挖矿小号_*天分析.xlsx
 
+# IDE
+.idea/
+
 # Python缓存
 __pycache__/
 *.pyc
 .venv/
-.claude/
-/test_temp/
-/history/
-/CLAUDE.md
-*.png
+
+
