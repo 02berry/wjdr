@@ -15,3 +15,5 @@ __pycache__/
 .claude/
 /test_temp/
 /history/
+/CLAUDE.md
+*.png
